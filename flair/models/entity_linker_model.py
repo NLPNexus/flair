@@ -2,10 +2,11 @@ import logging
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union, cast
 from unicodedata import category
 
 import torch
+from deprecated.sphinx import deprecated
 
 import flair.embeddings
 import flair.nn
@@ -18,7 +19,7 @@ log = logging.getLogger("flair")
 class CandidateGenerator:
     """Given a string, the CandidateGenerator returns possible target classes as candidates."""
 
-    def __init__(self, candidates: Union[str, Dict], backoff: bool = True) -> None:
+    def __init__(self, candidates: Union[str, Dict[str, List[str]]], backoff: bool = True) -> None:
         # internal candidate lists of generator
         self.mention_to_candidates_map: Dict = {}
 
@@ -40,7 +41,9 @@ class CandidateGenerator:
 
         elif isinstance(candidates, Dict):
             self.mention_to_candidates_map = candidates
-
+        else:
+            raise ValueError(f"'{candidates}' could not be loaded.")
+        self.mention_to_candidates_map = cast(Dict[str, List[str]], self.mention_to_candidates_map)
         # if lower casing is enabled, create candidate lists of lower cased versions
         self.backoff = backoff
         if self.backoff:
@@ -48,14 +51,16 @@ class CandidateGenerator:
             lowercased_mention_to_candidates_map: Dict = {}
 
             # go through each mention and its candidates
-            for mention, candidates in self.mention_to_candidates_map.items():
+            for mention, candidates_list in self.mention_to_candidates_map.items():
                 backoff_mention = self._make_backoff_string(mention)
                 # check if backoff mention already seen. If so, add candidates. Else, create new entry.
                 if backoff_mention in lowercased_mention_to_candidates_map:
                     current_candidates = lowercased_mention_to_candidates_map[backoff_mention]
-                    lowercased_mention_to_candidates_map[backoff_mention] = set(current_candidates).union(candidates)
+                    lowercased_mention_to_candidates_map[backoff_mention] = set(current_candidates).union(
+                        candidates_list
+                    )
                 else:
-                    lowercased_mention_to_candidates_map[backoff_mention] = candidates
+                    lowercased_mention_to_candidates_map[backoff_mention] = candidates_list
 
             # set lowercased version as map
             self.mention_to_candidates_map = lowercased_mention_to_candidates_map
@@ -89,10 +94,11 @@ class SpanClassifier(flair.nn.DefaultClassifier[Sentence, Span]):
         label_dictionary: Dictionary,
         pooling_operation: str = "first_last",
         label_type: str = "nel",
+        span_label_type: Optional[str] = None,
         candidates: Optional[CandidateGenerator] = None,
         **classifierargs,
     ) -> None:
-        """Initializes an EntityLinker.
+        """Initializes an SpanClassifier.
 
         Args:
             embeddings: embeddings used to embed the tokens of the sentences.
@@ -102,20 +108,22 @@ class SpanClassifier(flair.nn.DefaultClassifier[Sentence, Span]):
                 text representation we take the average of the embeddings of the token in the mention.
                 `first_last` concatenates the embedding of the first and the embedding of the last token.
             label_type: name of the label you use.
+            span_label_type: name of the label you use for inputs of predictions.
             candidates: If provided, use a :class:`CandidateGenerator` for prediction candidates.
             **classifierargs: The arguments propagated to :meth:`flair.nn.DefaultClassifier.__init__`
         """
         super().__init__(
             embeddings=embeddings,
             label_dictionary=label_dictionary,
-            final_embedding_size=embeddings.embedding_length * 2
-            if pooling_operation == "first_last"
-            else embeddings.embedding_length,
+            final_embedding_size=(
+                embeddings.embedding_length * 2 if pooling_operation == "first_last" else embeddings.embedding_length
+            ),
             **classifierargs,
         )
 
         self.pooling_operation = pooling_operation
         self._label_type = label_type
+        self._span_label_type = span_label_type
 
         cases: Dict[str, Callable[[Span, List[str]], torch.Tensor]] = {
             "average": self.emb_mean,
@@ -148,9 +156,16 @@ class SpanClassifier(flair.nn.DefaultClassifier[Sentence, Span]):
         return torch.mean(torch.stack([token.get_embedding(embedding_names) for token in span], 0), 0)
 
     def _get_data_points_from_sentence(self, sentence: Sentence) -> List[Span]:
+        if self._span_label_type is not None:
+            spans = sentence.get_spans(self._span_label_type)
+            # only use span label type if there are predictions, otherwise search for output label type (training labels)
+            if spans:
+                return spans
         return sentence.get_spans(self.label_type)
 
     def _filter_data_point(self, data_point: Sentence) -> bool:
+        if self._span_label_type is not None and bool(data_point.get_labels(self._span_label_type)):
+            return True
         return bool(data_point.get_labels(self.label_type))
 
     def _get_embedding_for_data_point(self, prediction_data_point: Span) -> torch.Tensor:
@@ -165,6 +180,7 @@ class SpanClassifier(flair.nn.DefaultClassifier[Sentence, Span]):
             "pooling_operation": self.pooling_operation,
             "loss_weights": self.weight_dict,
             "candidates": self.candidates,
+            "span_label_type": self._span_label_type,
         }
         return model_state
 
@@ -232,8 +248,6 @@ class SpanClassifier(flair.nn.DefaultClassifier[Sentence, Span]):
         return cast("SpanClassifier", super().load(model_path=model_path))
 
 
-def EntityLinker(**classifierargs):
-    from warnings import warn
-
-    warn("The EntityLinker class is deprecated and will be removed in Flair 1.0. Use SpanClassifier instead!")
-    return SpanClassifier(**classifierargs)
+@deprecated(reason="The EntityLinker was renamed to :class:`flair.models.SpanClassifier`.", version="0.12.2")
+class EntityLinker(SpanClassifier):
+    pass

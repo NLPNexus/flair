@@ -1,4 +1,5 @@
 """Utilities for working with the local dataset cache. Copied from AllenNLP."""
+
 import base64
 import functools
 import io
@@ -20,6 +21,7 @@ import requests
 import torch
 from botocore import UNSIGNED
 from botocore.config import Config
+from requests import HTTPError
 from tqdm import tqdm as _tqdm
 
 import flair
@@ -143,6 +145,36 @@ def unzip_file(file: Union[str, Path], unzip_to: Union[str, Path]):
         zipObj.extractall(Path(unzip_to))
 
 
+def hf_download(model_name: str) -> str:
+    hf_model_name = "pytorch_model.bin"
+    revision = "main"
+
+    if "@" in model_name:
+        model_name_split = model_name.split("@")
+        revision = model_name_split[-1]
+        model_name = model_name_split[0]
+
+    # use model name as subfolder
+    model_folder = model_name.split("/", maxsplit=1)[1] if "/" in model_name else model_name
+
+    # Lazy import
+    from huggingface_hub.file_download import hf_hub_download
+
+    try:
+        return hf_hub_download(
+            repo_id=model_name,
+            filename=hf_model_name,
+            revision=revision,
+            library_name="flair",
+            library_version=flair.__version__,
+            cache_dir=flair.cache_root / "models" / model_folder,
+        )
+    except HTTPError:
+        # output information
+        Path(flair.cache_root / "models" / model_folder).rmdir()  # remove folder again if not valid
+        raise
+
+
 def unpack_file(file: Path, unpack_to: Path, mode: Optional[str] = None, keep: bool = True):
     """Unpacks an archive file to the given location.
 
@@ -207,7 +239,7 @@ def get_from_cache(url: str, cache_dir: Path) -> Path:
         return cache_path
 
     # make HEAD request to check ETag
-    response = requests.head(url, headers={"User-Agent": "Flair"}, allow_redirects=True)
+    response = requests.head(url, headers={"User-Agent": "Flair"}, allow_redirects=True, proxies=url_proxies)
     if response.status_code != 200:
         raise OSError(f"HEAD request failed for url {url} with status code {response.status_code}.")
 

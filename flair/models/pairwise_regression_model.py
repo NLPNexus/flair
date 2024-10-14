@@ -1,6 +1,5 @@
-import typing
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -12,7 +11,7 @@ import flair.nn
 from flair.data import Corpus, Dictionary, Sentence, TextPair, _iter_dataset
 from flair.datasets import DataLoader, FlairDatapointDataset
 from flair.nn.model import ReduceTransformerVocabMixin
-from flair.training_utils import MetricRegression, Result, store_embeddings
+from flair.training_utils import EmbeddingStorageMode, MetricRegression, Result, store_embeddings
 
 
 class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
@@ -91,7 +90,7 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
 
     def get_used_tokens(
         self, corpus: Corpus, context_length: int = 0, respect_document_boundaries: bool = True
-    ) -> typing.Iterable[List[str]]:
+    ) -> Iterable[List[str]]:
         for sentence_pair in _iter_dataset(corpus.get_all_sentences()):
             yield [t.text for t in sentence_pair.first]
             yield [t.text for t in sentence_pair.first.left_context(context_length, respect_document_boundaries)]
@@ -153,7 +152,7 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
     def _filter_data_point(self, pair: TextPair) -> bool:
         return len(pair) > 0
 
-    def _encode_data_points(self, data_points: List[TextPair]):
+    def _encode_data_points(self, data_points: List[TextPair]) -> torch.Tensor:
         # get a tensor of data points
         data_point_tensor = torch.stack([self._get_embedding_for_data_point(data_point) for data_point in data_points])
 
@@ -178,14 +177,17 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
                 0,
             )
         else:
-            concatenated_sentence = Sentence(
-                prediction_data_point.first.to_tokenized_string()
-                + self.sep
-                + prediction_data_point.second.to_tokenized_string(),
-                use_tokenizer=False,
-            )
-            self.embeddings.embed(concatenated_sentence)
-            return concatenated_sentence.get_embedding(embedding_names)
+            # If the concatenated version of the text pair does not exist yet, create it
+            if prediction_data_point.concatenated_data is None:
+                concatenated_sentence = Sentence(
+                    prediction_data_point.first.to_tokenized_string()
+                    + self.sep
+                    + prediction_data_point.second.to_tokenized_string(),
+                    use_tokenizer=False,
+                )
+                prediction_data_point.concatenated_data = concatenated_sentence
+            self.embeddings.embed(prediction_data_point.concatenated_data)
+            return prediction_data_point.concatenated_data.get_embedding(embedding_names)
 
     def _get_state_dict(self):
         model_state = {
@@ -201,10 +203,16 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
         return model_state
 
     @classmethod
-    def _init_model_with_state_dict(cls, state, **kwargs):
-        # add DefaultClassifier arguments
+    def _init_model_with_state_dict(cls, state: Dict[str, Any], **kwargs):
+        """Initializes a TextPairRegressor model from a state dictionary (exported by _get_state_dict).
+
+        Requires keys 'state_dict', 'document_embeddings', and 'label_type' in the state dictionary.
+        """
+        if "document_embeddings" in state:
+            state["embeddings"] = state.pop("document_embeddings")  # need to rename this parameter
+        # add Model arguments
         for arg in [
-            "document_embeddings",
+            "embeddings",
             "label_type",
             "embed_separately",
             "dropout",
@@ -257,7 +265,7 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
                 if not batch:
                     continue
 
-                data_point_tensor = self._encode_data_points(pairs)
+                data_point_tensor = self._encode_data_points(batch)
                 scores = self.decoder(data_point_tensor)
 
                 for sentence, score in zip(batch, scores.tolist()):
@@ -273,14 +281,15 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
         data_points: Union[List[TextPair], Dataset],
         gold_label_type: str,
         out_path: Union[str, Path, None] = None,
-        embedding_storage_mode: str = "none",
+        embedding_storage_mode: EmbeddingStorageMode = "none",
         mini_batch_size: int = 32,
-        main_evaluation_metric: Tuple[str, str] = ("micro avg", "f1-score"),
-        exclude_labels: List[str] = [],
+        main_evaluation_metric: Tuple[str, str] = ("correlation", "pearson"),
+        exclude_labels: Optional[List[str]] = None,
         gold_label_dictionary: Optional[Dictionary] = None,
         return_loss: bool = True,
         **kwargs,
     ) -> Result:
+        exclude_labels = exclude_labels if exclude_labels is not None else []
         # read Dataset into data loader, if list of sentences passed, make Dataset first
         if not isinstance(data_points, Dataset):
             data_points = FlairDatapointDataset(data_points)
@@ -318,9 +327,7 @@ class TextPairRegressor(flair.nn.Model[TextPair], ReduceTransformerVocabMixin):
 
                     if out_path is not None:
                         for pair, prediction, true_value in zip(batch, results, true_values):
-                            eval_line = "{}\t{}\t{}\t{}\n".format(
-                                pair.first.to_original_text(), pair.second.to_original_text(), true_value, prediction
-                            )
+                            eval_line = f"{pair.first.to_original_text()}\t{pair.second.to_original_text()}\t{true_value}\t{prediction}\n"
                             out_file.write(eval_line)
 
                     store_embeddings(batch, embedding_storage_mode)

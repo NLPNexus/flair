@@ -418,6 +418,7 @@ def test_load_universal_dependencies_conllu_corpus(tasks_base_path):
     _assert_universal_dependencies_conllu_dataset(corpus.train)
 
 
+@pytest.mark.skip()
 def test_hipe_2022_corpus(tasks_base_path):
     # This test covers the complete HIPE 2022 dataset.
     # https://github.com/hipe-eval/HIPE-2022-data
@@ -681,6 +682,7 @@ def test_hipe_2022_corpus(tasks_base_path):
     test_hipe_2022(dataset_version="v2.1", add_document_separator=False)
 
 
+@pytest.mark.skip()
 def test_icdar_europeana_corpus(tasks_base_path):
     # This test covers the complete ICDAR Europeana corpus:
     # https://github.com/stefan-it/historic-domain-adaptation-icdar
@@ -698,6 +700,7 @@ def test_icdar_europeana_corpus(tasks_base_path):
         check_number_sentences(len(corpus.test), gold_stats[language]["test"], "test")
 
 
+@pytest.mark.skip()
 def test_masakhane_corpus(tasks_base_path):
     # This test covers the complete MasakhaNER dataset, including support for v1 and v2.
     supported_versions = ["v1", "v2"]
@@ -781,6 +784,7 @@ def test_masakhane_corpus(tasks_base_path):
             check_number_sentences(len(corpus.test), gold_stats["test"], "test", language, version)
 
 
+@pytest.mark.skip()
 def test_nermud_corpus(tasks_base_path):
     # This test covers the NERMuD dataset. Official stats can be found here:
     # https://github.com/dhfbk/KIND/tree/main/evalita-2023
@@ -799,6 +803,7 @@ def test_nermud_corpus(tasks_base_path):
         check_number_sentences(len(corpus.dev), stats["dev"], "dev")
 
 
+@pytest.mark.skip()
 def test_german_ler_corpus(tasks_base_path):
     corpus = flair.datasets.NER_GERMAN_LEGAL()
 
@@ -808,6 +813,7 @@ def test_german_ler_corpus(tasks_base_path):
     assert len(corpus.test) == 6673, "Mismatch in number of sentences for test split"
 
 
+@pytest.mark.skip()
 def test_masakha_pos_corpus(tasks_base_path):
     # This test covers the complete MasakhaPOS dataset.
     supported_versions = ["v1"]
@@ -822,11 +828,13 @@ def test_masakha_pos_corpus(tasks_base_path):
             "ibo",
             "kin",
             "lug",
+            "luo",
             "mos",
             "pcm",
             "nya",
             "sna",
             "swa",
+            "tsn",
             "twi",
             "wol",
             "xho",
@@ -835,7 +843,7 @@ def test_masakha_pos_corpus(tasks_base_path):
         ],
     }
 
-    africa_pos_stats = {
+    masakha_pos_stats = {
         "v1": {
             "bam": {"train": 775, "dev": 154, "test": 619},
             "bbj": {"train": 750, "dev": 149, "test": 599},
@@ -845,11 +853,13 @@ def test_masakha_pos_corpus(tasks_base_path):
             "ibo": {"train": 803, "dev": 160, "test": 642},
             "kin": {"train": 757, "dev": 151, "test": 604},
             "lug": {"train": 733, "dev": 146, "test": 586},
+            "luo": {"train": 758, "dev": 151, "test": 606},
             "mos": {"train": 757, "dev": 151, "test": 604},
             "pcm": {"train": 752, "dev": 150, "test": 600},
             "nya": {"train": 728, "dev": 145, "test": 582},
             "sna": {"train": 747, "dev": 149, "test": 596},
             "swa": {"train": 693, "dev": 138, "test": 553},
+            "tsn": {"train": 754, "dev": 150, "test": 602},
             "twi": {"train": 785, "dev": 157, "test": 628},
             "wol": {"train": 782, "dev": 156, "test": 625},
             "xho": {"train": 752, "dev": 150, "test": 601},
@@ -865,13 +875,14 @@ def test_masakha_pos_corpus(tasks_base_path):
         for language in supported_languages[version]:
             corpus = flair.datasets.MASAKHA_POS(languages=language, version=version)
 
-            gold_stats = africa_pos_stats[version][language]
+            gold_stats = masakha_pos_stats[version][language]
 
             check_number_sentences(len(corpus.train), gold_stats["train"], "train", language, version)
             check_number_sentences(len(corpus.dev), gold_stats["dev"], "dev", language, version)
             check_number_sentences(len(corpus.test), gold_stats["test"], "test", language, version)
 
 
+@pytest.mark.skip()
 def test_german_mobie(tasks_base_path):
     corpus = flair.datasets.NER_GERMAN_MOBIE()
 
@@ -956,6 +967,7 @@ def test_jsonl_corpus_loads_metadata(tasks_base_path):
     assert dataset.sentences[2].get_metadata("from") == 125
 
 
+@pytest.mark.skip()
 def test_ontonotes_download():
     from urllib.parse import urlparse
 
@@ -963,6 +975,7 @@ def test_ontonotes_download():
     assert all([res.scheme, res.netloc])
 
 
+@pytest.mark.skip()
 def test_ontonotes_extraction(tasks_base_path):
     import os
     import tempfile

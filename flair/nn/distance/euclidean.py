@@ -17,7 +17,6 @@ https://github.com/asappresearch/dynamic-classification/blob/master/LICENSE.md
 Source: https://github.com/asappresearch/dynamic-classification/blob/55beb5a48406c187674bea40487c011e8fa45aab/distance/euclidean.py
 """
 
-
 import torch
 from torch import Tensor, nn
 
@@ -41,9 +40,7 @@ class EuclideanDistance(nn.Module):
             distance matrix of shape (n_1, n_2)
 
         """
-        _dist = [torch.sum((mat_1 - mat_2[i]) ** 2, dim=1) for i in range(mat_2.size(0))]
-        dist = torch.stack(_dist, dim=1)
-        return dist
+        return torch.cdist(mat_1, mat_2).pow(2)
 
 
 class EuclideanMean(nn.Module):

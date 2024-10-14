@@ -5,8 +5,9 @@ import typing
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from operator import itemgetter
+from os import PathLike
 from pathlib import Path
-from typing import Dict, Iterable, List, NamedTuple, Optional, Union, cast
+from typing import Any, DefaultDict, Dict, Iterable, List, NamedTuple, Optional, Tuple, Union, cast
 
 import torch
 from deprecated.sphinx import deprecated
@@ -49,7 +50,7 @@ class BoundingBox(NamedTuple):
 class Dictionary:
     """This class holds a dictionary that maps strings to IDs, used to generate one-hot encodings of strings."""
 
-    def __init__(self, add_unk=True) -> None:
+    def __init__(self, add_unk: bool = True) -> None:
         # init dictionaries
         self.item2idx: Dict[bytes, int] = {}
         self.idx2item: List[bytes] = []
@@ -143,21 +144,21 @@ class Dictionary:
     def start_stop_tags_are_set(self) -> bool:
         return {b"<START>", b"<STOP>"}.issubset(self.item2idx.keys())
 
-    def save(self, savefile):
+    def save(self, savefile: PathLike):
         import pickle
 
         with open(savefile, "wb") as f:
             mappings = {"idx2item": self.idx2item, "item2idx": self.item2idx}
             pickle.dump(mappings, f)
 
-    def __setstate__(self, d):
+    def __setstate__(self, d: Dict) -> None:
         self.__dict__ = d
         # set 'add_unk' if the dictionary was created with a version of Flair older than 0.9
         if "add_unk" not in self.__dict__:
             self.__dict__["add_unk"] = b"<unk>" in self.__dict__["idx2item"]
 
     @classmethod
-    def load_from_file(cls, filename: Union[str, Path]):
+    def load_from_file(cls, filename: Union[str, Path]) -> "Dictionary":
         import pickle
 
         with Path(filename).open("rb") as f:
@@ -174,7 +175,7 @@ class Dictionary:
         return dictionary
 
     @classmethod
-    def load(cls, name: str):
+    def load(cls, name: str) -> "Dictionary":
         from flair.file_utils import cached_path
 
         hu_path: str = "https://flair.informatik.hu-berlin.de/resources/characters"
@@ -213,10 +214,11 @@ class Label:
     Default value for the score is 1.0.
     """
 
-    def __init__(self, data_point: "DataPoint", value: str, score: float = 1.0) -> None:
+    def __init__(self, data_point: "DataPoint", value: str, score: float = 1.0, **metadata) -> None:
         self._value = value
         self._score = score
         self.data_point: DataPoint = data_point
+        self.metadata = metadata
         super().__init__()
 
     def set_value(self, value: str, score: float = 1.0):
@@ -235,14 +237,14 @@ class Label:
         return {"value": self.value, "confidence": self.score}
 
     def __str__(self) -> str:
-        return f"{self.data_point.unlabeled_identifier}{flair._arrow}{self._value} ({round(self._score, 4)})"
+        return f"{self.data_point.unlabeled_identifier}{flair._arrow}{self._value}{self.metadata_str} ({round(self._score, 4)})"
 
     @property
     def shortstring(self):
         return f'"{self.data_point.text}"/{self._value}'
 
     def __repr__(self) -> str:
-        return f"'{self.data_point.unlabeled_identifier}'/'{self._value}' ({round(self._score, 4)})"
+        return f"'{self.data_point.unlabeled_identifier}'/'{self._value}'{self.metadata_str} ({round(self._score, 4)})"
 
     def __eq__(self, other):
         return self.value == other.value and self.score == other.score and self.data_point == other.data_point
@@ -252,6 +254,13 @@ class Label:
 
     def __lt__(self, other):
         return self.data_point < other.data_point
+
+    @property
+    def metadata_str(self) -> str:
+        if not self.metadata:
+            return ""
+        rep = "/".join(f"{k}={v}" for k, v in self.metadata.items())
+        return f"/{rep}"
 
     @property
     def labeled_identifier(self):
@@ -274,11 +283,11 @@ class DataPoint:
     def __init__(self) -> None:
         self.annotation_layers: Dict[str, List[Label]] = {}
         self._embeddings: Dict[str, torch.Tensor] = {}
-        self._metadata: Dict[str, typing.Any] = {}
+        self._metadata: Dict[str, Any] = {}
 
     @property
     @abstractmethod
-    def embedding(self):
+    def embedding(self) -> torch.Tensor:
         pass
 
     def set_embedding(self, name: str, vector: torch.Tensor):
@@ -308,7 +317,7 @@ class DataPoint:
             embeddings.append(embed)
         return embeddings
 
-    def to(self, device: str, pin_memory: bool = False):
+    def to(self, device: str, pin_memory: bool = False) -> None:
         for name, vector in self._embeddings.items():
             if str(vector.device) != str(device):
                 if pin_memory:
@@ -316,7 +325,7 @@ class DataPoint:
                 else:
                     self._embeddings[name] = vector.to(device, non_blocking=True)
 
-    def clear_embeddings(self, embedding_names: Optional[List[str]] = None):
+    def clear_embeddings(self, embedding_names: Optional[List[str]] = None) -> None:
         if embedding_names is None:
             self._embeddings = {}
         else:
@@ -324,44 +333,46 @@ class DataPoint:
                 if name in self._embeddings:
                     del self._embeddings[name]
 
-    def has_label(self, type) -> bool:
+    def has_label(self, type: str) -> bool:
         return type in self.annotation_layers
 
-    def add_metadata(self, key: str, value: typing.Any) -> None:
+    def add_metadata(self, key: str, value: Any) -> None:
         self._metadata[key] = value
 
-    def get_metadata(self, key: str) -> typing.Any:
+    def get_metadata(self, key: str) -> Any:
         return self._metadata[key]
 
     def has_metadata(self, key: str) -> bool:
         return key in self._metadata
 
-    def add_label(self, typename: str, value: str, score: float = 1.0):
+    def add_label(self, typename: str, value: str, score: float = 1.0, **metadata) -> "DataPoint":
+        label = Label(self, value, score, **metadata)
+
         if typename not in self.annotation_layers:
-            self.annotation_layers[typename] = [Label(self, value, score)]
+            self.annotation_layers[typename] = [label]
         else:
-            self.annotation_layers[typename].append(Label(self, value, score))
+            self.annotation_layers[typename].append(label)
 
         return self
 
-    def set_label(self, typename: str, value: str, score: float = 1.0):
-        self.annotation_layers[typename] = [Label(self, value, score)]
+    def set_label(self, typename: str, value: str, score: float = 1.0, **metadata):
+        self.annotation_layers[typename] = [Label(self, value, score, **metadata)]
         return self
 
-    def remove_labels(self, typename: str):
+    def remove_labels(self, typename: str) -> None:
         if typename in self.annotation_layers:
             del self.annotation_layers[typename]
 
-    def get_label(self, label_type: Optional[str] = None, zero_tag_value="O"):
+    def get_label(self, label_type: Optional[str] = None, zero_tag_value: str = "O") -> Label:
         if len(self.get_labels(label_type)) == 0:
             return Label(self, zero_tag_value)
         return self.get_labels(label_type)[0]
 
-    def get_labels(self, typename: Optional[str] = None):
+    def get_labels(self, typename: Optional[str] = None) -> List[Label]:
         if typename is None:
             return self.labels
 
-        return self.annotation_layers[typename] if typename in self.annotation_layers else []
+        return self.annotation_layers.get(typename, [])
 
     @property
     def labels(self) -> List[Label]:
@@ -375,28 +386,25 @@ class DataPoint:
     def unlabeled_identifier(self):
         raise NotImplementedError
 
-    def _printout_labels(self, main_label=None, add_score: bool = True):
+    def _printout_labels(self, main_label=None, add_score: bool = True, add_metadata: bool = True) -> str:
         all_labels = []
         keys = [main_label] if main_label is not None else self.annotation_layers.keys()
-        if add_score:
-            for key in keys:
-                all_labels.extend(
-                    [
-                        f"{label.value} ({round(label.score, 4)})"
-                        for label in self.get_labels(key)
-                        if label.data_point == self
-                    ]
-                )
-            labels = "; ".join(all_labels)
-            if labels != "":
-                labels = flair._arrow + labels
-        else:
-            for key in keys:
-                all_labels.extend([f"{label.value}" for label in self.get_labels(key) if label.data_point == self])
-            labels = "/".join(all_labels)
-            if labels != "":
-                labels = "/" + labels
-        return labels
+
+        sep = "; " if add_score else "/"
+        sent_sep = flair._arrow if add_score else "/"
+        for key in keys:
+            for label in self.get_labels(key):
+                if label.data_point is not self:
+                    continue
+                value = label.value
+                if add_metadata:
+                    value = f"{value}{label.metadata_str}"
+                if add_score:
+                    value = f"{value} ({label.score:.04f})"
+                all_labels.append(value)
+        if not all_labels:
+            return ""
+        return sent_sep + sep.join(all_labels)
 
     def __str__(self) -> str:
         return self.unlabeled_identifier + self._printout_labels()
@@ -424,15 +432,71 @@ class DataPoint:
     def score(self):
         return self.labels[0].score
 
-    def __lt__(self, other):
+    def __lt__(self, other: "DataPoint"):
         return self.start_position < other.start_position
 
     def __len__(self) -> int:
         raise NotImplementedError
 
 
+class EntityCandidate:
+    """A Concept as part of a knowledgebase or ontology."""
+
+    def __init__(
+        self,
+        concept_id: str,
+        concept_name: str,
+        database_name: str,
+        additional_ids: Optional[List[str]] = None,
+        synonyms: Optional[List[str]] = None,
+        description: Optional[str] = None,
+    ):
+        """A Concept as part of a knowledgebase or ontology.
+
+        Args:
+            concept_id: Identifier of the concept from the knowledgebase / ontology
+            concept_name: (Canonical) name of the concept from the knowledgebase / ontology
+            additional_ids: List of additional identifiers for the concept / entity in the KB / ontology
+            database_name: Name of the knowledgebase / ontology
+            synonyms: A list of synonyms for this entry
+            description: A description about the Concept to describe
+        """
+        self.concept_id = concept_id
+        self.concept_name = concept_name
+        self.database_name = database_name
+        self.description = description
+        if additional_ids is None:
+            self.additional_ids = []
+        else:
+            self.additional_ids = additional_ids
+        if synonyms is None:
+            self.synonyms = []
+        else:
+            self.synonyms = synonyms
+
+    def __str__(self) -> str:
+        string = f"EntityLinkingCandidate: {self.database_name}:{self.concept_id} - {self.concept_name}"
+        if self.additional_ids:
+            string += f" - {'|'.join(self.additional_ids)}"
+        return string
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "concept_id": self.concept_id,
+            "concept_name": self.concept_name,
+            "database_name": self.database_name,
+            "additional_ids": self.additional_ids,
+            "synonyms": self.synonyms,
+            "description": self.description,
+        }
+
+
 DT = typing.TypeVar("DT", bound=DataPoint)
 DT2 = typing.TypeVar("DT2", bound=DataPoint)
+DT3 = typing.TypeVar("DT3", bound=DataPoint)
 
 
 class _PartOfSentence(DataPoint, ABC):
@@ -440,21 +504,21 @@ class _PartOfSentence(DataPoint, ABC):
         super().__init__()
         self.sentence: Sentence = sentence
 
-    def add_label(self, typename: str, value: str, score: float = 1.0):
-        super().add_label(typename, value, score)
-        self.sentence.annotation_layers.setdefault(typename, []).append(Label(self, value, score))
+    def add_label(self, typename: str, value: str, score: float = 1.0, **metadata):
+        super().add_label(typename, value, score, **metadata)
+        self.sentence.annotation_layers.setdefault(typename, []).append(Label(self, value, score, **metadata))
 
-    def set_label(self, typename: str, value: str, score: float = 1.0):
+    def set_label(self, typename: str, value: str, score: float = 1.0, **metadata):
         if len(self.annotation_layers.get(typename, [])) > 0:
             # First we remove any existing labels for this PartOfSentence in self.sentence
             self.sentence.annotation_layers[typename] = [
                 label for label in self.sentence.annotation_layers.get(typename, []) if label.data_point != self
             ]
-        self.sentence.annotation_layers.setdefault(typename, []).append(Label(self, value, score))
-        super().set_label(typename, value, score)
+        self.sentence.annotation_layers.setdefault(typename, []).append(Label(self, value, score, **metadata))
+        super().set_label(typename, value, score, **metadata)
         return self
 
-    def remove_labels(self, typename: str):
+    def remove_labels(self, typename: str) -> None:
         # labels also need to be deleted at Sentence object
         for label in self.get_labels(typename):
             self.sentence.annotation_layers[typename].remove(label)
@@ -504,7 +568,7 @@ class Token(_PartOfSentence):
     def unlabeled_identifier(self) -> str:
         return f'Token[{self.idx - 1}]: "{self.text}"'
 
-    def add_tags_proba_dist(self, tag_type: str, tags: List[Label]):
+    def add_tags_proba_dist(self, tag_type: str, tags: List[Label]) -> None:
         self.tags_proba_dist[tag_type] = tags
 
     def get_tags_proba_dist(self, tag_type: str) -> List[Label]:
@@ -537,23 +601,23 @@ class Token(_PartOfSentence):
     def __repr__(self) -> str:
         return self.__str__()
 
-    def add_label(self, typename: str, value: str, score: float = 1.0):
+    def add_label(self, typename: str, value: str, score: float = 1.0, **metadata):
         # The Token is a special _PartOfSentence in that it may be initialized without a Sentence.
         # therefore, labels get added only to the Sentence if it exists
         if self.sentence:
-            super().add_label(typename=typename, value=value, score=score)
+            super().add_label(typename=typename, value=value, score=score, **metadata)
         else:
-            DataPoint.add_label(self, typename=typename, value=value, score=score)
+            DataPoint.add_label(self, typename=typename, value=value, score=score, **metadata)
 
-    def set_label(self, typename: str, value: str, score: float = 1.0):
+    def set_label(self, typename: str, value: str, score: float = 1.0, **metadata):
         # The Token is a special _PartOfSentence in that it may be initialized without a Sentence.
         # Therefore, labels get set only to the Sentence if it exists
         if self.sentence:
-            super().set_label(typename=typename, value=value, score=score)
+            super().set_label(typename=typename, value=value, score=score, **metadata)
         else:
-            DataPoint.set_label(self, typename=typename, value=value, score=score)
+            DataPoint.set_label(self, typename=typename, value=value, score=score, **metadata)
 
-    def to_dict(self, tag_type: Optional[str] = None):
+    def to_dict(self, tag_type: Optional[str] = None) -> Dict[str, Any]:
         return {
             "text": self.text,
             "start_pos": self.start_position,
@@ -895,7 +959,7 @@ class Sentence(DataPoint):
     def __str__(self) -> str:
         return self.to_tagged_string()
 
-    def to_tagged_string(self, main_label=None) -> str:
+    def to_tagged_string(self, main_label: Optional[str] = None) -> str:
         already_printed = [self]
 
         output = super().__str__()
@@ -915,7 +979,7 @@ class Sentence(DataPoint):
         return output
 
     @property
-    def text(self):
+    def text(self) -> str:
         return self.to_original_text()
 
     def to_tokenized_string(self) -> str:
@@ -924,7 +988,7 @@ class Sentence(DataPoint):
 
         return self.tokenized
 
-    def to_plain_string(self):
+    def to_plain_string(self) -> str:
         plain = ""
         for token in self.tokens:
             plain += token.text
@@ -973,7 +1037,7 @@ class Sentence(DataPoint):
             [t.text + t.whitespace_after * " " for t in self.tokens]
         ).strip()
 
-    def to_dict(self, tag_type: Optional[str] = None):
+    def to_dict(self, tag_type: Optional[str] = None) -> Dict[str, Any]:
         return {
             "text": self.to_original_text(),
             "labels": [label.to_dict() for label in self.get_labels(tag_type) if label.data_point is self],
@@ -982,17 +1046,15 @@ class Sentence(DataPoint):
             "tokens": [token.to_dict(tag_type) for token in self.tokens],
         }
 
-    def get_span(self, start: int, stop: int):
+    def get_span(self, start: int, stop: int) -> Span:
         span_slice = slice(start, stop)
         return self[span_slice]
 
     @typing.overload
-    def __getitem__(self, idx: int) -> Token:
-        ...
+    def __getitem__(self, idx: int) -> Token: ...
 
     @typing.overload
-    def __getitem__(self, s: slice) -> Span:
-        ...
+    def __getitem__(self, s: slice) -> Span: ...
 
     def __getitem__(self, subscript):
         if isinstance(subscript, slice):
@@ -1029,7 +1091,8 @@ class Sentence(DataPoint):
 
             try:
                 self.language_code = langdetect.detect(self.to_plain_string())
-            except Exception:
+            except Exception as e:
+                log.debug(e)
                 self.language_code = "en"
 
         return self.language_code
@@ -1046,6 +1109,11 @@ class Sentence(DataPoint):
         text = text.replace("\u200b", "")
         text = text.replace("\ufe0f", "")
         text = text.replace("\ufeff", "")
+
+        text = text.replace(
+            "\u2028", ""
+        )  # LINE SEPARATOR & PARAGRAPH SEPARATOR are usually used for wrapping & displaying texts,
+        text = text.replace("\u2029", "")  # but not for semantic meaning -> ignore them.
         return text
 
     @staticmethod
@@ -1157,6 +1225,7 @@ class DataPair(DataPoint, typing.Generic[DT, DT2]):
         super().__init__()
         self.first = first
         self.second = second
+        self.concatenated_data: Optional[Union[DT, DT2]] = None
 
     def to(self, device: str, pin_memory: bool = False):
         self.first.to(device, pin_memory)
@@ -1165,6 +1234,8 @@ class DataPair(DataPoint, typing.Generic[DT, DT2]):
     def clear_embeddings(self, embedding_names: Optional[List[str]] = None):
         self.first.clear_embeddings(embedding_names)
         self.second.clear_embeddings(embedding_names)
+        if self.concatenated_data is not None:
+            self.concatenated_data.clear_embeddings(embedding_names)
 
     @property
     def embedding(self):
@@ -1193,8 +1264,52 @@ class DataPair(DataPoint, typing.Generic[DT, DT2]):
 TextPair = DataPair[Sentence, Sentence]
 
 
+class DataTriple(DataPoint, typing.Generic[DT, DT2, DT3]):
+    def __init__(self, first: DT, second: DT2, third: DT3):
+        super().__init__()
+        self.first = first
+        self.second = second
+        self.third = third
+
+    def to(self, device: str, pin_memory: bool = False):
+        self.first.to(device, pin_memory)
+        self.second.to(device, pin_memory)
+        self.third.to(device, pin_memory)
+
+    def clear_embeddings(self, embedding_names: Optional[List[str]] = None):
+        self.first.clear_embeddings(embedding_names)
+        self.second.clear_embeddings(embedding_names)
+        self.third.clear_embeddings(embedding_names)
+
+    @property
+    def embedding(self):
+        return torch.cat([self.first.embedding, self.second.embedding, self.third.embedding])
+
+    def __len__(self):
+        return len(self.first) + len(self.second) + len(self.third)
+
+    @property
+    def unlabeled_identifier(self):
+        return f"DataTriple: '{self.first.unlabeled_identifier}' + '{self.second.unlabeled_identifier}' + '{self.third.unlabeled_identifier}'"
+
+    @property
+    def start_position(self) -> int:
+        return self.first.start_position
+
+    @property
+    def end_position(self) -> int:
+        return self.first.end_position
+
+    @property
+    def text(self):
+        return self.first.text + " || " + self.second.text + "||" + self.third.text
+
+
+TextTriple = DataTriple[Sentence, Sentence, Sentence]
+
+
 class Image(DataPoint):
-    def __init__(self, data=None, imageURL=None) -> None:
+    def __init__(self, data=None, imageURL=None):
         super().__init__()
 
         self.data = data
@@ -1236,6 +1351,7 @@ class Corpus(typing.Generic[T_co]):
         test: Optional[Dataset[T_co]] = None,
         name: str = "corpus",
         sample_missing_splits: Union[bool, str] = True,
+        random_seed: Optional[int] = None,
     ) -> None:
         # set name
         self.name: str = name
@@ -1249,10 +1365,10 @@ class Corpus(typing.Generic[T_co]):
             test_portion = 0.1
             train_length = _len_dataset(train)
             test_size: int = round(train_length * test_portion)
-            test, train = randomly_split_into_two_datasets(train, test_size)
+            test, train = randomly_split_into_two_datasets(train, test_size, random_seed)
             log.warning(
                 "No test split found. Using %.0f%% (i.e. %d samples) of the train split as test data",
-                test_portion,
+                test_portion * 100,
                 test_size,
             )
 
@@ -1261,10 +1377,10 @@ class Corpus(typing.Generic[T_co]):
             dev_portion = 0.1
             train_length = _len_dataset(train)
             dev_size: int = round(train_length * dev_portion)
-            dev, train = randomly_split_into_two_datasets(train, dev_size)
+            dev, train = randomly_split_into_two_datasets(train, dev_size, random_seed)
             log.warning(
                 "No dev split found. Using %.0f%% (i.e. %d samples) of the train split as dev data",
-                dev_portion,
+                dev_portion * 100,
                 dev_size,
             )
 
@@ -1288,18 +1404,20 @@ class Corpus(typing.Generic[T_co]):
     def downsample(
         self,
         percentage: float = 0.1,
-        downsample_train=True,
-        downsample_dev=True,
-        downsample_test=True,
-    ):
+        downsample_train: bool = True,
+        downsample_dev: bool = True,
+        downsample_test: bool = True,
+        random_seed: Optional[int] = None,
+    ) -> "Corpus":
+        """Reduce all datasets in corpus proportionally to the given percentage."""
         if downsample_train and self._train is not None:
-            self._train = self._downsample_to_proportion(self._train, percentage)
+            self._train = self._downsample_to_proportion(self._train, percentage, random_seed)
 
         if downsample_dev and self._dev is not None:
-            self._dev = self._downsample_to_proportion(self._dev, percentage)
+            self._dev = self._downsample_to_proportion(self._dev, percentage, random_seed)
 
         if downsample_test and self._test is not None:
-            self._test = self._downsample_to_proportion(self._test, percentage)
+            self._test = self._downsample_to_proportion(self._test, percentage, random_seed)
 
         return self
 
@@ -1357,7 +1475,7 @@ class Corpus(typing.Generic[T_co]):
 
         return subset
 
-    def make_vocab_dictionary(self, max_tokens=-1, min_freq=1) -> Dictionary:
+    def make_vocab_dictionary(self, max_tokens: int = -1, min_freq: int = 1) -> Dictionary:
         """Creates a dictionary of all tokens contained in the corpus.
 
         By defining `max_tokens` you can set the maximum number of tokens that should be contained in the dictionary.
@@ -1379,7 +1497,7 @@ class Corpus(typing.Generic[T_co]):
 
         return vocab_dictionary
 
-    def _get_most_common_tokens(self, max_tokens, min_freq) -> List[str]:
+    def _get_most_common_tokens(self, max_tokens: int, min_freq: int) -> List[str]:
         tokens_and_frequencies = Counter(self._get_all_tokens())
 
         tokens: List[str] = []
@@ -1396,9 +1514,9 @@ class Corpus(typing.Generic[T_co]):
         return [t.text for t in tokens]
 
     @staticmethod
-    def _downsample_to_proportion(dataset: Dataset, proportion: float):
+    def _downsample_to_proportion(dataset: Dataset, proportion: float, random_seed: Optional[int] = None) -> Subset:
         sampled_size: int = round(_len_dataset(dataset) * proportion)
-        splits = randomly_split_into_two_datasets(dataset, sampled_size)
+        splits = randomly_split_into_two_datasets(dataset, sampled_size, random_seed=random_seed)
         return splits[0]
 
     def obtain_statistics(self, label_type: Optional[str] = None, pretty_print: bool = True) -> Union[dict, str]:
@@ -1448,20 +1566,20 @@ class Corpus(typing.Generic[T_co]):
         }
 
     @staticmethod
-    def _get_tokens_per_sentence(sentences):
+    def _get_tokens_per_sentence(sentences: Iterable[Sentence]) -> List[int]:
         return [len(x.tokens) for x in sentences]
 
     @staticmethod
-    def _count_sentence_labels(sentences):
-        label_count = defaultdict(lambda: 0)
+    def _count_sentence_labels(sentences: Iterable[Sentence]) -> DefaultDict[str, int]:
+        label_count: DefaultDict[str, int] = defaultdict(lambda: 0)
         for sent in sentences:
             for label in sent.labels:
                 label_count[label.value] += 1
         return label_count
 
     @staticmethod
-    def _count_token_labels(sentences, label_type):
-        label_count = defaultdict(lambda: 0)
+    def _count_token_labels(sentences: Iterable[Sentence], label_type: str) -> DefaultDict[str, int]:
+        label_count: DefaultDict[str, int] = defaultdict(lambda: 0)
         for sent in sentences:
             for token in sent.tokens:
                 if label_type in token.annotation_layers:
@@ -1552,7 +1670,9 @@ class Corpus(typing.Generic[T_co]):
                 [f"'{label[0]}' (in {label[1]} sentences)" for label in sentence_label_type_counter.most_common()]
             )
             log.error(f"ERROR: The corpus contains the following label types: {contained_labels}")
-            raise Exception
+            raise ValueError(
+                f"You specified a label type ({label_type}) that is not contained in the corpus:\n{contained_labels}"
+            )
 
         log.info(
             f"Dictionary created for label '{label_type}' with {len(label_dictionary)} "
@@ -1727,10 +1847,10 @@ class MultiCorpus(Corpus):
 
     def __str__(self) -> str:
         output = (
-            f"MultiCorpus: "  # type: ignore[arg-type]
-            f"{len(self.train) if self.train else 0} train + "
-            f"{len(self.dev) if self.dev else 0} dev + "
-            f"{len(self.test) if self.test else 0} test sentences\n - "
+            f"MultiCorpus: "
+            f"{_len_dataset(self.train) if self.train else 0} train + "
+            f"{_len_dataset(self.dev) if self.dev else 0} dev + "
+            f"{_len_dataset(self.test) if self.test else 0} test sentences\n - "
         )
         output += "\n - ".join([f"{type(corpus).__name__} {corpus!s} - {corpus.name}" for corpus in self.corpora])
         return output
@@ -1775,7 +1895,7 @@ class ConcatFlairDataset(Dataset):
     def __len__(self) -> int:
         return self.cumulative_sizes[-1]
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Sentence:
         if idx < 0:
             if -idx > len(self):
                 raise ValueError("absolute value of index should not exceed dataset length")
@@ -1787,11 +1907,11 @@ class ConcatFlairDataset(Dataset):
         return sentence
 
     @property
-    def cummulative_sizes(self):
+    def cummulative_sizes(self) -> List[int]:
         return self.cumulative_sizes
 
 
-def iob2(tags):
+def iob2(tags: List) -> bool:
     """Converts the tags to the IOB2 format.
 
     Check that tags have a valid IOB format.
@@ -1814,11 +1934,21 @@ def iob2(tags):
     return True
 
 
-def randomly_split_into_two_datasets(dataset, length_of_first):
+def randomly_split_into_two_datasets(
+    dataset: Dataset, length_of_first: int, random_seed: Optional[int] = None
+) -> Tuple[Subset, Subset]:
+    """Shuffles a dataset and splits into two subsets.
+
+    The length of the first is specified and the remaining samples go into the second subset.
+    """
     import random
 
-    indices = list(range(len(dataset)))
-    random.shuffle(indices)
+    indices = list(range(_len_dataset(dataset)))
+    if random_seed is None:
+        random.shuffle(indices)
+    else:
+        random_generator = random.Random(random_seed)
+        random_generator.shuffle(indices)
 
     first_dataset = indices[:length_of_first]
     second_dataset = indices[length_of_first:]
@@ -1828,7 +1958,9 @@ def randomly_split_into_two_datasets(dataset, length_of_first):
     return Subset(dataset, first_dataset), Subset(dataset, second_dataset)
 
 
-def get_spans_from_bio(bioes_tags: List[str], bioes_scores=None) -> List[typing.Tuple[List[int], float, str]]:
+def get_spans_from_bio(
+    bioes_tags: List[str], bioes_scores: Optional[List[float]] = None
+) -> List[typing.Tuple[List[int], float, str]]:
     # add a dummy "O" to close final prediction
     bioes_tags.append("O")
     # return complex list

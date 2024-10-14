@@ -8,17 +8,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import torch.nn
+from torch import Tensor
 from torch.nn.modules.loss import _Loss
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
 
 import flair
+from flair.class_utils import get_non_abstract_subclasses
 from flair.data import DT, DT2, Corpus, Dictionary, Sentence, _iter_dataset
 from flair.datasets import DataLoader, FlairDatapointDataset
 from flair.embeddings import Embeddings
 from flair.embeddings.base import load_embeddings
 from flair.file_utils import Tqdm, load_torch_state
-from flair.training_utils import Result, store_embeddings
+from flair.training_utils import EmbeddingStorageMode, Result, store_embeddings
 
 log = logging.getLogger("flair")
 
@@ -33,7 +35,7 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
 
     @property
     @abstractmethod
-    def label_type(self):
+    def label_type(self) -> str:
         """Each model predicts labels of a certain type."""
         raise NotImplementedError
 
@@ -51,10 +53,10 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
         data_points: Union[List[DT], Dataset],
         gold_label_type: str,
         out_path: Optional[Union[str, Path]] = None,
-        embedding_storage_mode: str = "none",
+        embedding_storage_mode: EmbeddingStorageMode = "none",
         mini_batch_size: int = 32,
         main_evaluation_metric: Tuple[str, str] = ("micro avg", "f1-score"),
-        exclude_labels: List[str] = [],
+        exclude_labels: Optional[List[str]] = None,
         gold_label_dictionary: Optional[Dictionary] = None,
         return_loss: bool = True,
         **kwargs,
@@ -79,19 +81,18 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
         Returns:
             The evaluation results.
         """
+        exclude_labels = exclude_labels if exclude_labels is not None else []
         raise NotImplementedError
 
-    def _get_state_dict(self):
+    def _get_state_dict(self) -> Dict:
         """Returns the state dictionary for this model."""
-        state_dict = {"state_dict": self.state_dict()}
-
         # Always include the name of the Model class for which the state dict holds
-        state_dict["__cls__"] = self.__class__.__name__
+        state_dict = {"state_dict": self.state_dict(), "__cls__": self.__class__.__name__}
 
         return state_dict
 
     @classmethod
-    def _init_model_with_state_dict(cls, state, **kwargs):
+    def _init_model_with_state_dict(cls, state: Dict[str, Any], **kwargs):
         """Initialize the model from a state dictionary."""
         if "embeddings" in kwargs:
             embeddings = kwargs.pop("embeddings")
@@ -106,10 +107,11 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
         return model
 
     @staticmethod
-    def _fetch_model(model_name) -> str:
+    def _fetch_model(model_name):
+        # this seems to just return model name, not a model with that name
         return model_name
 
-    def save(self, model_file: Union[str, Path], checkpoint: bool = False):
+    def save(self, model_file: Union[str, Path], checkpoint: bool = False) -> None:
         """Saves the current model to the provided file.
 
         Args:
@@ -137,7 +139,7 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
         # if this class is abstract, go through all inheriting classes and try to fetch and load the model
         if inspect.isabstract(cls):
             # get all non-abstract subclasses
-            subclasses = get_non_abstract_subclasses(cls)
+            subclasses = list(get_non_abstract_subclasses(cls))
 
             # try to fetch the model for each subclass. if fetching is possible, load model and return it
             for model_cls in subclasses:
@@ -145,12 +147,23 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
                     new_model_path = model_cls._fetch_model(model_path)
                     if new_model_path != model_path:
                         return model_cls.load(new_model_path)
-                except Exception:
-                    # skip any invalid loadings, e.g. not found on huggingface hub
+                except Exception as e:
+                    log.debug(e)
+                    # skip any invalid loadings, e.g. not found on HuggingFace hub
                     continue
 
             # if the model cannot be fetched, load as a file
-            state = model_path if isinstance(model_path, dict) else load_torch_state(str(model_path))
+            try:
+                state = model_path if isinstance(model_path, dict) else load_torch_state(str(model_path))
+            except Exception:
+                log.error("-" * 80)
+                log.error(
+                    f"ERROR: The key '{model_path}' was neither found on the ModelHub nor is this a valid path to a file on your system!"
+                )
+                log.error(" -> Please check https://huggingface.co/models?filter=flair for all available models.")
+                log.error(" -> Alternatively, point to a model file on your local drive.")
+                log.error("-" * 80)
+                raise ValueError(f"Could not find any model with name '{model_path}'")
 
             # try to get model class from state
             cls_name = state.pop("__cls__", None)
@@ -161,13 +174,12 @@ class Model(torch.nn.Module, typing.Generic[DT], ABC):
 
             # older (flair 11.3 and below) models do not contain cls information. In this case, try all subclasses
             for model_cls in subclasses:
-                # if str(model_cls) == "<class 'flair.models.pairwise_classification_model.TextPairClassifier'>": continue
                 try:
                     model = model_cls.load(state)
                     return model
                 except Exception as e:
                     print(e)
-                    # skip any invalid loadings, e.g. not found on huggingface hub
+                    # skip any invalid loadings, e.g. not found on HuggingFace hub
                     continue
 
             raise ValueError(f"Could not find any model with name '{model_path}'")
@@ -242,14 +254,16 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
         data_points: Union[List[DT], Dataset],
         gold_label_type: str,
         out_path: Optional[Union[str, Path]] = None,
-        embedding_storage_mode: str = "none",
+        embedding_storage_mode: EmbeddingStorageMode = "none",
         mini_batch_size: int = 32,
         main_evaluation_metric: Tuple[str, str] = ("micro avg", "f1-score"),
-        exclude_labels: List[str] = [],
+        exclude_labels: Optional[List[str]] = None,
         gold_label_dictionary: Optional[Dictionary] = None,
         return_loss: bool = True,
         **kwargs,
     ) -> Result:
+        exclude_labels = exclude_labels if exclude_labels is not None else []
+
         import numpy as np
         import sklearn
 
@@ -339,8 +353,8 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
             true_values_span_aligned = []
             predicted_values_span_aligned = []
             for span in all_spans:
-                list_of_gold_values_for_span = all_true_values[span] if span in all_true_values else ["O"]
-                # delete exluded labels if exclude_labels is given
+                list_of_gold_values_for_span = all_true_values.get(span, ["O"])
+                # delete excluded labels if exclude_labels is given
                 for excluded_label in exclude_labels:
                     if excluded_label in list_of_gold_values_for_span:
                         list_of_gold_values_for_span.remove(excluded_label)
@@ -348,9 +362,7 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
                 if not list_of_gold_values_for_span:
                     continue
                 true_values_span_aligned.append(list_of_gold_values_for_span)
-                predicted_values_span_aligned.append(
-                    all_predicted_values[span] if span in all_predicted_values else ["O"]
-                )
+                predicted_values_span_aligned.append(all_predicted_values.get(span, ["O"]))
 
             # write all_predicted_values to out_file if set
             if out_path:
@@ -436,7 +448,7 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
                 labels=labels,
             )
 
-            # compute accuracy separately as it is not always in classification_report (e.. when micro avg exists)
+            # compute accuracy separately as it is not always in classification_report (e.g. when micro avg exists)
             accuracy_score = round(sklearn.metrics.accuracy_score(y_true, y_pred), 4)
 
             # if there is only one label, then "micro avg" = "macro avg"
@@ -447,10 +459,13 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
             # Otherwise, it is identical to the "macro avg". In this case, we add it to the report.
             if "micro avg" not in classification_report_dict:
                 classification_report_dict["micro avg"] = {}
-                for precision_recall_f1 in classification_report_dict["macro avg"]:
-                    classification_report_dict["micro avg"][precision_recall_f1] = classification_report_dict[
-                        "accuracy"
-                    ]
+                for metric_key in classification_report_dict["macro avg"]:
+                    if metric_key != "support":
+                        classification_report_dict["micro avg"][metric_key] = classification_report_dict["accuracy"]
+                    else:
+                        classification_report_dict["micro avg"][metric_key] = classification_report_dict["macro avg"][
+                            "support"
+                        ]
 
             detailed_result = (
                 "\nResults:"
@@ -504,8 +519,8 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
         return_probabilities_for_all_classes: bool = False,
         verbose: bool = False,
         label_name: Optional[str] = None,
-        return_loss=False,
-        embedding_storage_mode="none",
+        return_loss: bool = False,
+        embedding_storage_mode: EmbeddingStorageMode = "none",
     ):
         """Predicts the class labels for the given sentences.
 
@@ -522,7 +537,7 @@ class Classifier(Model[DT], typing.Generic[DT], ReduceTransformerVocabMixin, ABC
         """
         raise NotImplementedError
 
-    def _print_predictions(self, batch, gold_label_type):
+    def _print_predictions(self, batch: List[DT], gold_label_type: str) -> List[str]:
         lines = []
         for datapoint in batch:
             # check if there is a label mismatch
@@ -682,7 +697,7 @@ class DefaultClassifier(Classifier[DT], typing.Generic[DT, DT2], ABC):
             if "default" in x:
                 self._multi_label_threshold = x
             else:
-                raise Exception('multi_label_threshold dict should have a "default" key')
+                raise ValueError('multi_label_threshold dict should have a "default" key')
         else:
             self._multi_label_threshold = {"default": x}
 
@@ -700,16 +715,18 @@ class DefaultClassifier(Classifier[DT], typing.Generic[DT, DT2], ABC):
         else:
             return torch.tensor(
                 [
-                    self.label_dictionary.get_idx_for_item(label[0])
-                    if len(label) > 0
-                    else self.label_dictionary.get_idx_for_item("O")
+                    (
+                        self.label_dictionary.get_idx_for_item(label[0])
+                        if len(label) > 0
+                        else self.label_dictionary.get_idx_for_item("O")
+                    )
                     for label in labels
                 ],
                 dtype=torch.long,
                 device=flair.device,
             )
 
-    def _encode_data_points(self, sentences: List[DT], data_points: List[DT2]):
+    def _encode_data_points(self, sentences: List[DT], data_points: List[DT2]) -> Tensor:
         # embed sentences
         if self.should_embed_sentence:
             self.embeddings.embed(sentences)
@@ -726,7 +743,8 @@ class DefaultClassifier(Classifier[DT], typing.Generic[DT, DT2], ABC):
 
         return data_point_tensor
 
-    def _mask_scores(self, scores, data_points):
+    def _mask_scores(self, scores: Tensor, data_points) -> Tensor:
+        """Classes that inherit from DefaultClassifier may optionally mask scores."""
         return scores
 
     def forward_loss(self, sentences: List[DT]) -> Tuple[torch.Tensor, int]:
@@ -780,8 +798,8 @@ class DefaultClassifier(Classifier[DT], typing.Generic[DT, DT2], ABC):
         return_probabilities_for_all_classes: bool = False,
         verbose: bool = False,
         label_name: Optional[str] = None,
-        return_loss=False,
-        embedding_storage_mode="none",
+        return_loss: bool = False,
+        embedding_storage_mode: EmbeddingStorageMode = "none",
     ):
         """Predicts the class labels for the given sentences. The labels are directly added to the sentences.
 
@@ -976,14 +994,3 @@ class DefaultClassifier(Classifier[DT], typing.Generic[DT, DT2], ABC):
         from typing import cast
 
         return cast("DefaultClassifier", super().load(model_path=model_path))
-
-
-def get_non_abstract_subclasses(cls):
-    all_subclasses = []
-    for subclass in cls.__subclasses__():
-        all_subclasses.extend(get_non_abstract_subclasses(subclass))
-        if inspect.isabstract(subclass):
-            continue
-        all_subclasses.append(subclass)
-
-    return all_subclasses

@@ -2,7 +2,6 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
-from urllib.error import HTTPError
 
 import torch
 import torch.nn
@@ -14,7 +13,7 @@ import flair.nn
 from flair.data import Dictionary, Label, Sentence, Span, get_spans_from_bio
 from flair.datasets import DataLoader, FlairDatapointDataset
 from flair.embeddings import TokenEmbeddings
-from flair.file_utils import cached_path, unzip_file
+from flair.file_utils import cached_path, hf_download
 from flair.models.sequence_tagger_utils.crf import CRF
 from flair.models.sequence_tagger_utils.viterbi import ViterbiDecoder, ViterbiLoss
 from flair.training_utils import store_embeddings
@@ -395,6 +394,9 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
             for sentence in sentences:
                 sentence_labels = ["O"] * len(sentence)
                 for label in sentence.get_labels(self.label_type):
+                    if label.value == "O":
+                        continue
+
                     span: Span = label.data_point
                     if self.tag_format == "BIOES":
                         if len(span) == 1:
@@ -571,9 +573,9 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
 
         return predictions, all_tags
 
-    def _all_scores_for_token(self, sentences: List[Sentence], scores: torch.Tensor, lengths: List[int]):
+    def _all_scores_for_token(self, sentences: List[Sentence], score_tensor: torch.Tensor, lengths: List[int]):
         """Returns all scores for each tag in tag dictionary."""
-        scores = scores.numpy()
+        scores = score_tensor.numpy()
         tokens = [token for sentence in sentences for token in sentence]
         prob_all_tags = [
             [
@@ -675,8 +677,6 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
             "chunk": "flair/chunk-english",
             "chunk-fast": "flair/chunk-english-fast",
             # Language-specific NER models
-            "ar-ner": "megantosh/flair-arabic-multi-ner",
-            "ar-pos": "megantosh/flair-arabic-dialects-codeswitch-egy-lev",
             "da-ner": "flair/ner-danish",
             "de-ner": "flair/ner-german",
             "de-ler": "flair/ner-german-legal",
@@ -686,40 +686,21 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
             "ner-ukrainian": "dchaplinsky/flair-uk-ner",
             # Language-specific POS models
             "pos-ukrainian": "dchaplinsky/flair-uk-pos",
+            # Historic German
+            "de-historic-direct": "aehrm/redewiedergabe-direct",
+            "de-historic-indirect": "aehrm/redewiedergabe-indirect",
+            "de-historic-reported": "aehrm/redewiedergabe-reported",
+            "de-historic-free-indirect": "aehrm/redewiedergabe-freeindirect",
         }
 
         hu_path: str = "https://nlp.informatik.hu-berlin.de/resources/models"
-        hunflair_paper_path = hu_path + "/hunflair_smallish_models"
         hunflair_main_path = hu_path + "/hunflair_allcorpus_models"
 
         hu_model_map = {
             # English NER models
-            "ner": "/".join([hu_path, "ner", "en-ner-conll03-v0.4.pt"]),
             "ner-pooled": "/".join([hu_path, "ner-pooled", "en-ner-conll03-pooled-v0.5.pt"]),
-            "ner-fast": "/".join([hu_path, "ner-fast", "en-ner-fast-conll03-v0.4.pt"]),
-            "ner-ontonotes": "/".join([hu_path, "ner-ontonotes", "en-ner-ontonotes-v0.4.pt"]),
-            "ner-ontonotes-fast": "/".join([hu_path, "ner-ontonotes-fast", "en-ner-ontonotes-fast-v0.4.pt"]),
-            # Multilingual NER models
-            "ner-multi": "/".join([hu_path, "multi-ner", "quadner-large.pt"]),
-            "multi-ner": "/".join([hu_path, "multi-ner", "quadner-large.pt"]),
-            "ner-multi-fast": "/".join([hu_path, "multi-ner-fast", "ner-multi-fast.pt"]),
-            # English POS models
-            "upos": "/".join([hu_path, "upos", "en-pos-ontonotes-v0.4.pt"]),
-            "upos-fast": "/".join([hu_path, "upos-fast", "en-upos-ontonotes-fast-v0.4.pt"]),
-            "pos": "/".join([hu_path, "pos", "en-pos-ontonotes-v0.5.pt"]),
-            "pos-fast": "/".join([hu_path, "pos-fast", "en-pos-ontonotes-fast-v0.5.pt"]),
-            # Multilingual POS models
-            "pos-multi": "/".join([hu_path, "multi-pos", "pos-multi-v0.1.pt"]),
-            "multi-pos": "/".join([hu_path, "multi-pos", "pos-multi-v0.1.pt"]),
-            "pos-multi-fast": "/".join([hu_path, "multi-pos-fast", "pos-multi-fast.pt"]),
-            "multi-pos-fast": "/".join([hu_path, "multi-pos-fast", "pos-multi-fast.pt"]),
             # English SRL models
-            "frame": "/".join([hu_path, "frame", "en-frame-ontonotes-v0.4.pt"]),
-            "frame-fast": "/".join([hu_path, "frame-fast", "en-frame-ontonotes-fast-v0.4.pt"]),
             "frame-large": "/".join([hu_path, "frame-large", "frame-large.pt"]),
-            # English chunking models
-            "chunk": "/".join([hu_path, "chunk", "en-chunk-conll2000-v0.4.pt"]),
-            "chunk-fast": "/".join([hu_path, "chunk-fast", "en-chunk-conll2000-fast-v0.4.pt"]),
             # Danish models
             "da-pos": "/".join([hu_path, "da-pos", "da-pos-v0.1.pt"]),
             "da-ner": "/".join([hu_path, "NER-danish", "da-ner-v0.1.pt"]),
@@ -728,13 +709,14 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
             "de-pos-tweets": "/".join([hu_path, "de-pos-tweets", "de-pos-twitter-v0.1.pt"]),
             "de-ner": "/".join([hu_path, "de-ner", "de-ner-conll03-v0.4.pt"]),
             "de-ner-germeval": "/".join([hu_path, "de-ner-germeval", "de-ner-germeval-0.4.1.pt"]),
-            "de-ler": "/".join([hu_path, "de-ner-legal", "de-ner-legal.pt"]),
-            "de-ner-legal": "/".join([hu_path, "de-ner-legal", "de-ner-legal.pt"]),
+            # Arabic models
+            "ar-ner": "/".join([hu_path, "arabic", "ar-ner.pt"]),
+            "ar-pos": "/".join([hu_path, "arabic", "ar-pos.pt"]),
             # French models
             "fr-ner": "/".join([hu_path, "fr-ner", "fr-ner-wikiner-0.4.pt"]),
             # Dutch models
             "nl-ner": "/".join([hu_path, "nl-ner", "nl-ner-bert-conll02-v0.8.pt"]),
-            "nl-ner-rnn": "/".join([hu_path, "nl-ner-rnn", "nl-ner-conll02-v0.5.pt"]),
+            "nl-ner-rnn": "/".join([hu_path, "nl-ner-rnn", "nl-ner-conll02-v0.14.0.pt"]),
             # Malayalam models
             "ml-pos": "https://raw.githubusercontent.com/qburst/models-repository/master/FlairMalayalamModels/malayalam-xpos-model.pt",
             "ml-upos": "https://raw.githubusercontent.com/qburst/models-repository/master/FlairMalayalamModels/malayalam-upos-model.pt",
@@ -746,25 +728,16 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
                     "pucpr-flair-clinical-pos-tagging-best-model.pt",
                 ]
             ),
-            # Keyphase models
-            "keyphrase": "/".join([hu_path, "keyphrase", "keyphrase-en-scibert.pt"]),
-            "negation-speculation": "/".join([hu_path, "negation-speculation", "negation-speculation-model.pt"]),
+            "negation-speculation": "/".join([hu_path, "negation-speculation-v14", "negation-speculation-v0.14.0.pt"]),
             # Biomedical models
-            "hunflair-paper-cellline": "/".join([hunflair_paper_path, "cellline", "hunflair-celline-v1.0.pt"]),
-            "hunflair-paper-chemical": "/".join([hunflair_paper_path, "chemical", "hunflair-chemical-v1.0.pt"]),
-            "hunflair-paper-disease": "/".join([hunflair_paper_path, "disease", "hunflair-disease-v1.0.pt"]),
-            "hunflair-paper-gene": "/".join([hunflair_paper_path, "gene", "hunflair-gene-v1.0.pt"]),
-            "hunflair-paper-species": "/".join([hunflair_paper_path, "species", "hunflair-species-v1.0.pt"]),
-            "hunflair-cellline": "/".join([hunflair_main_path, "cellline", "hunflair-celline-v1.0.pt"]),
-            "hunflair-chemical": "/".join([hunflair_main_path, "huner-chemical", "hunflair-chemical-full-v1.0.pt"]),
-            "hunflair-disease": "/".join([hunflair_main_path, "huner-disease", "hunflair-disease-full-v1.0.pt"]),
-            "hunflair-gene": "/".join([hunflair_main_path, "huner-gene", "hunflair-gene-full-v1.0.pt"]),
-            "hunflair-species": "/".join([hunflair_main_path, "huner-species", "hunflair-species-full-v1.1.pt"]),
+            "hunflair-cellline": "/".join([hunflair_main_path, "huner-cellline", "hunflair-cellline.pt"]),
+            "hunflair-chemical": "/".join([hunflair_main_path, "huner-chemical", "hunflair-chemical.pt"]),
+            "hunflair-disease": "/".join([hunflair_main_path, "huner-disease", "hunflair-disease.pt"]),
+            "hunflair-gene": "/".join([hunflair_main_path, "huner-gene", "hunflair-gene.pt"]),
+            "hunflair-species": "/".join([hunflair_main_path, "huner-species", "hunflair-species.pt"]),
         }
 
         cache_dir = Path("models")
-
-        get_from_model_hub = False
 
         # check if model name is a valid local file
         if Path(model_name).exists():
@@ -775,107 +748,23 @@ class SequenceTagger(flair.nn.Classifier[Sentence]):
             # get mapped name
             hf_model_name = huggingface_model_map[model_name]
 
-            # use mapped name instead
-            model_name = hf_model_name
-            get_from_model_hub = True
+            model_path = hf_download(hf_model_name)
 
         # if not, check if model key is remapped to direct download location. If so, download model
         elif model_name in hu_model_map:
             model_path = cached_path(hu_model_map[model_name], cache_dir=cache_dir)
 
-        # special handling for the taggers by the @redewiegergabe project (TODO: move to model hub)
-        elif model_name == "de-historic-indirect":
-            model_file = flair.cache_root / cache_dir / "indirect" / "final-model.pt"
-            if not model_file.exists():
-                cached_path(
-                    "http://www.redewiedergabe.de/models/indirect.zip",
-                    cache_dir=cache_dir,
+            if model_name.startswith("hunflair-"):
+                log.warning(
+                    "HunFlair (version 1) is deprecated. Consider using HunFlair2 for improved extraction performance: "
+                    "Classifier.load('hunflair2')."
+                    "See https://github.com/flairNLP/flair/blob/master/resources/docs/HUNFLAIR2.md for further "
+                    "information."
                 )
-                unzip_file(
-                    flair.cache_root / cache_dir / "indirect.zip",
-                    flair.cache_root / cache_dir,
-                )
-            model_path = str(flair.cache_root / cache_dir / "indirect" / "final-model.pt")
-
-        elif model_name == "de-historic-direct":
-            model_file = flair.cache_root / cache_dir / "direct" / "final-model.pt"
-            if not model_file.exists():
-                cached_path(
-                    "http://www.redewiedergabe.de/models/direct.zip",
-                    cache_dir=cache_dir,
-                )
-                unzip_file(
-                    flair.cache_root / cache_dir / "direct.zip",
-                    flair.cache_root / cache_dir,
-                )
-            model_path = str(flair.cache_root / cache_dir / "direct" / "final-model.pt")
-
-        elif model_name == "de-historic-reported":
-            model_file = flair.cache_root / cache_dir / "reported" / "final-model.pt"
-            if not model_file.exists():
-                cached_path(
-                    "http://www.redewiedergabe.de/models/reported.zip",
-                    cache_dir=cache_dir,
-                )
-                unzip_file(
-                    flair.cache_root / cache_dir / "reported.zip",
-                    flair.cache_root / cache_dir,
-                )
-            model_path = str(flair.cache_root / cache_dir / "reported" / "final-model.pt")
-
-        elif model_name == "de-historic-free-indirect":
-            model_file = flair.cache_root / cache_dir / "freeIndirect" / "final-model.pt"
-            if not model_file.exists():
-                cached_path(
-                    "http://www.redewiedergabe.de/models/freeIndirect.zip",
-                    cache_dir=cache_dir,
-                )
-                unzip_file(
-                    flair.cache_root / cache_dir / "freeIndirect.zip",
-                    flair.cache_root / cache_dir,
-                )
-            model_path = str(flair.cache_root / cache_dir / "freeIndirect" / "final-model.pt")
 
         # for all other cases (not local file or special download location), use HF model hub
         else:
-            get_from_model_hub = True
-
-        # if not a local file, get from model hub
-        if get_from_model_hub:
-            hf_model_name = "pytorch_model.bin"
-            revision = "main"
-
-            if "@" in model_name:
-                model_name_split = model_name.split("@")
-                revision = model_name_split[-1]
-                model_name = model_name_split[0]
-
-            # use model name as subfolder
-            model_folder = model_name.split("/", maxsplit=1)[1] if "/" in model_name else model_name
-
-            # Lazy import
-            from huggingface_hub.file_download import hf_hub_download
-
-            try:
-                model_path = hf_hub_download(
-                    repo_id=model_name,
-                    filename=hf_model_name,
-                    revision=revision,
-                    library_name="flair",
-                    library_version=flair.__version__,
-                    cache_dir=flair.cache_root / "models" / model_folder,
-                )
-            except HTTPError:
-                # output information
-                log.error("-" * 80)
-                log.error(
-                    f"ERROR: The key '{model_name}' was neither found on the ModelHub nor is this a valid path to a file on your system!"
-                )
-                log.error(" -> Please check https://huggingface.co/models?filter=flair for all available models.")
-                log.error(" -> Alternatively, point to a model file on your local drive.")
-                log.error("-" * 80)
-                Path(flair.cache_root / "models" / model_folder).rmdir()  # remove folder again if not valid
-                raise
+            model_path = hf_download(model_name)
 
         return model_path
 

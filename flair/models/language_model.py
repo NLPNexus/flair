@@ -189,7 +189,7 @@ class LanguageModel(nn.Module):
 
     @classmethod
     def load_language_model(cls, model_file: Union[Path, str], has_decoder=True):
-        state = torch.load(str(model_file), map_location=flair.device)
+        state = torch.load(str(model_file), map_location=flair.device, weights_only=False)
 
         document_delimiter = state.get("document_delimiter", "\n")
         has_decoder = state.get("has_decoder", True) and has_decoder
@@ -213,11 +213,11 @@ class LanguageModel(nn.Module):
 
     @classmethod
     def load_checkpoint(cls, model_file: Union[Path, str]):
-        state = torch.load(str(model_file), map_location=flair.device)
+        state = torch.load(str(model_file), map_location=flair.device, weights_only=False)
 
-        epoch = state["epoch"] if "epoch" in state else None
-        split = state["split"] if "split" in state else None
-        loss = state["loss"] if "loss" in state else None
+        epoch = state.get("epoch")
+        split = state.get("split")
+        loss = state.get("loss")
         document_delimiter = state.get("document_delimiter", "\n")
 
         optimizer_state_dict = state.get("optimizer_state_dict")

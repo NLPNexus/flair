@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Type, Union, cast
 
 import torch
 import transformers
-from semver import Version
+from packaging.version import Version
 from torch.jit import ScriptModule
 from transformers import (
     CONFIG_MAPPING,
@@ -26,6 +26,7 @@ from transformers import (
     LayoutLMv2FeatureExtractor,
     PretrainedConfig,
     PreTrainedTokenizer,
+    T5TokenizerFast,
 )
 from transformers.tokenization_utils_base import LARGE_INTEGER
 from transformers.utils import PaddingStrategy
@@ -65,7 +66,7 @@ def pad_sequence_embeddings(all_hidden_states: List[torch.Tensor]) -> torch.Tens
 
 @torch.jit.script_if_tracing
 def truncate_hidden_states(hidden_states: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
-    return hidden_states[:, :, : input_ids.size()[1]]
+    return hidden_states[:, :, : input_ids.size(1)]
 
 
 @torch.jit.script_if_tracing
@@ -95,14 +96,12 @@ def combine_strided_tensors(
         if selected_sentences.size(0) > 1:
             start_part = selected_sentences[0, : half_stride + 1]
             mid_part = selected_sentences[:, half_stride + 1 : max_length - 1 - half_stride]
-            mid_part = torch.reshape(mid_part, (mid_part.shape[0] * mid_part.shape[1],) + mid_part.shape[2:])
-            end_part = selected_sentences[selected_sentences.shape[0] - 1, max_length - half_stride - 1 :]
+            mid_part = torch.reshape(mid_part, (mid_part.size(0) * mid_part.size(1),) + mid_part.size()[2:])
+            end_part = selected_sentences[selected_sentences.size(0) - 1, max_length - half_stride - 1 :]
             sentence_hidden_state = torch.cat((start_part, mid_part, end_part), dim=0)
-            sentence_hidden_states[sentence_id, : sentence_hidden_state.shape[0]] = torch.cat(
-                (start_part, mid_part, end_part), dim=0
-            )
+            sentence_hidden_states[sentence_id, : sentence_hidden_state.size(0)] = sentence_hidden_state
         else:
-            sentence_hidden_states[sentence_id, : selected_sentences.shape[1]] = selected_sentences[0, :]
+            sentence_hidden_states[sentence_id, : selected_sentences.size(1)] = selected_sentences[0, :]
 
     return sentence_hidden_states
 
@@ -171,11 +170,30 @@ def fill_mean_token_embeddings(
     word_ids: torch.Tensor,
     token_lengths: torch.Tensor,
 ):
-    for i in torch.arange(all_token_embeddings.shape[0]):
-        for _id in torch.arange(token_lengths[i]):  # type: ignore[call-overload]
-            all_token_embeddings[i, _id, :] = torch.nan_to_num(
-                sentence_hidden_states[i][word_ids[i] == _id].mean(dim=0)
-            )
+    batch_size, max_tokens, embedding_dim = all_token_embeddings.shape
+    mask = word_ids >= 0
+
+    # sum embeddings for each token
+    all_token_embeddings.scatter_add_(
+        1,
+        word_ids.clamp(min=0).unsqueeze(-1).expand(-1, -1, embedding_dim),
+        sentence_hidden_states * mask.unsqueeze(-1).float(),
+    )
+
+    # calculate the mean of subtokens
+    subtoken_counts = torch.zeros_like(all_token_embeddings[:, :, 0])
+    subtoken_counts.scatter_add_(1, word_ids.clamp(min=0), mask.float())
+    all_token_embeddings = torch.where(
+        subtoken_counts.unsqueeze(-1) > 0,
+        all_token_embeddings / subtoken_counts.unsqueeze(-1),
+        torch.zeros_like(all_token_embeddings),
+    )
+
+    # Create a mask for valid tokens based on token_lengths
+    token_mask = torch.arange(max_tokens, device=token_lengths.device)[None, :] < token_lengths[:, None]
+    all_token_embeddings = all_token_embeddings * token_mask.unsqueeze(-1)
+    all_token_embeddings = torch.nan_to_num(all_token_embeddings)
+
     return all_token_embeddings
 
 
@@ -427,7 +445,7 @@ class TransformerBaseEmbeddings(Embeddings[Sentence]):
         zip_obj = zipfile.ZipFile(zip_data)
         with tempfile.TemporaryDirectory() as temp_dir:
             zip_obj.extractall(temp_dir)
-            return AutoTokenizer.from_pretrained(temp_dir, add_prefix_space=True)
+            return AutoTokenizer.from_pretrained(temp_dir)
 
     @classmethod
     def _feature_extractor_from_bytes(cls, zip_data: Optional[BytesIO]) -> Optional[FeatureExtractionMixin]:
@@ -441,7 +459,13 @@ class TransformerBaseEmbeddings(Embeddings[Sentence]):
     def __tokenizer_bytes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             files = list(self.tokenizer.save_pretrained(temp_dir))
-            if self.tokenizer.is_fast and self.tokenizer.slow_tokenizer_class:
+            if (
+                self.tokenizer.is_fast
+                and self.tokenizer.slow_tokenizer_class
+                and not isinstance(
+                    self.tokenizer, T5TokenizerFast
+                )  # do not remove slow files for T5, as it can only be created from slow tokenizer with prefix space
+            ):
                 vocab_files = self.tokenizer.slow_tokenizer_class.vocab_files_names.values()
                 files = [f for f in files if all(v not in f for v in vocab_files)]
             zip_data = BytesIO()
@@ -997,6 +1021,11 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
         force_max_length: bool = False,
         needs_manual_ocr: Optional[bool] = None,
         use_context_separator: bool = True,
+        transformers_tokenizer_kwargs: Dict[str, Any] = {},
+        transformers_config_kwargs: Dict[str, Any] = {},
+        transformers_model_kwargs: Dict[str, Any] = {},
+        peft_config=None,
+        peft_gradient_checkpointing_kwargs: Optional[Dict[str, Any]] = {},
         **kwargs,
     ) -> None:
         """Instantiate transformers embeddings.
@@ -1023,6 +1052,11 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
             force_max_length: If True, the tokenizer will always pad the sequences to maximum length.
             needs_manual_ocr: If True, bounding boxes will be calculated manually. This is used for models like `layoutlm <https://huggingface.co/docs/transformers/model_doc/layoutlm>`_ where the tokenizer doesn't compute the bounding boxes itself.
             use_context_separator: If True, the embedding will hold an additional token to allow the model to distingulish between context and prediction.
+            transformers_tokenizer_kwargs: Further values forwarded to the initialization of the transformers tokenizer
+            transformers_config_kwargs: Further values forwarded to the initialization of the transformers config
+            transformers_model_kwargs: Further values forwarded to the initialization of the transformers model
+            peft_config: If set, the model will be trained using adapters and optionally QLoRA. Should be of type "PeftConfig" or subtype
+            peft_gradient_checkpointing_kwargs: Further values used when preparing the model for kbit training. Only used if peft_config is set.
             **kwargs: Further values forwarded to the transformers config
         """
         self.instance_parameters = self.get_instance_parameters(locals=locals())
@@ -1042,9 +1076,11 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
 
         if tokenizer_data is None:
             # load tokenizer and transformer model
-            self.tokenizer = AutoTokenizer.from_pretrained(model, add_prefix_space=True, **kwargs)
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model, add_prefix_space=True, **transformers_tokenizer_kwargs, **kwargs
+            )
             try:
-                self.feature_extractor = AutoFeatureExtractor.from_pretrained(model, apply_ocr=False)
+                self.feature_extractor = AutoFeatureExtractor.from_pretrained(model, apply_ocr=False, **kwargs)
             except OSError:
                 self.feature_extractor = None
         else:
@@ -1060,22 +1096,67 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
             return getattr(config, "model_type", "") in t5_supported_model_types
 
         if saved_config is None:
-            config = AutoConfig.from_pretrained(model, output_hidden_states=True, **kwargs)
+            config = AutoConfig.from_pretrained(
+                model, output_hidden_states=True, **transformers_config_kwargs, **kwargs
+            )
 
             if is_supported_t5_model(config):
                 from transformers import T5EncoderModel
 
-                transformer_model = T5EncoderModel.from_pretrained(model, config=config)
+                transformer_model = T5EncoderModel.from_pretrained(
+                    model, config=config, **transformers_model_kwargs, **kwargs
+                )
             else:
-                transformer_model = AutoModel.from_pretrained(model, config=config)
+                transformer_model = AutoModel.from_pretrained(
+                    model, config=config, **transformers_model_kwargs, **kwargs
+                )
         else:
             if is_supported_t5_model(saved_config):
                 from transformers import T5EncoderModel
 
-                transformer_model = T5EncoderModel(saved_config, **kwargs)
+                transformer_model = T5EncoderModel(saved_config, **transformers_model_kwargs, **kwargs)
             else:
-                transformer_model = AutoModel.from_config(saved_config, **kwargs)
-        transformer_model = transformer_model.to(flair.device)
+                transformer_model = AutoModel.from_config(saved_config, **transformers_model_kwargs, **kwargs)
+        try:
+            transformer_model = transformer_model.to(flair.device)
+        except ValueError as e:
+            # if model is quantized by BitsAndBytes this will fail
+            if "Please use the model as it is" not in str(e):
+                raise e
+
+        if peft_config is not None:
+            # add adapters for finetuning
+            try:
+                from peft import (
+                    TaskType,
+                    get_peft_model,
+                    prepare_model_for_kbit_training,
+                )
+            except ImportError:
+                log.error("You cannot use the PEFT finetuning without peft being installed")
+                raise
+            # peft_config: PeftConfig
+            if peft_config.task_type is None:
+                peft_config.task_type = TaskType.FEATURE_EXTRACTION
+            if peft_config.task_type != TaskType.FEATURE_EXTRACTION:
+                log.warn("The task type for PEFT should be set to FEATURE_EXTRACTION, as it is the only supported type")
+            if (
+                "load_in_4bit" in {**kwargs, **transformers_model_kwargs}
+                or "load_in_8bit" in {**kwargs, **transformers_model_kwargs}
+                or "quantization_config" in {**kwargs, **transformers_model_kwargs}
+            ):
+                transformer_model = prepare_model_for_kbit_training(
+                    transformer_model,
+                    **(peft_gradient_checkpointing_kwargs or {}),
+                )
+            transformer_model = get_peft_model(model=transformer_model, peft_config=peft_config)
+
+            trainable_params, all_param = transformer_model.get_nb_trainable_parameters()
+            log.info(
+                f"trainable params: {trainable_params:,d} || "
+                f"all params: {all_param:,d} || "
+                f"trainable%: {100 * trainable_params / all_param:.4f}"
+            )
 
         self.truncate = True
         self.force_max_length = force_max_length
@@ -1139,7 +1220,9 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
         # If we use a context separator, add a new special token
         self.use_context_separator = use_context_separator
         if use_context_separator:
-            added = self.tokenizer.add_special_tokens({"additional_special_tokens": [SENTENCE_BOUNDARY_TAG]})
+            added = self.tokenizer.add_special_tokens(
+                {"additional_special_tokens": [SENTENCE_BOUNDARY_TAG]}, replace_additional_special_tokens=False
+            )
             transformer_model.resize_token_embeddings(transformer_model.config.vocab_size + added)
 
         super().__init__(**self.to_args())
@@ -1163,7 +1246,7 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
     def _load_from_state_dict(
         self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
     ):
-        if transformers.__version__ >= Version(4, 31, 0):
+        if Version(transformers.__version__) >= Version("4.31.0"):
             assert isinstance(state_dict, dict)
             state_dict.pop(f"{prefix}model.embeddings.position_ids", None)
         super()._load_from_state_dict(
@@ -1248,7 +1331,7 @@ class TransformerEmbeddings(TransformerBaseEmbeddings):
             self.__dict__[key] = embedding.__dict__[key]
 
         if model_state_dict:
-            if transformers.__version__ >= Version(4, 31, 0):
+            if Version(transformers.__version__) >= Version("4.31.0"):
                 model_state_dict.pop("embeddings.position_ids", None)
             self.model.load_state_dict(model_state_dict)
 

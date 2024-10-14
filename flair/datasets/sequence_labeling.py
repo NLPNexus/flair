@@ -38,6 +38,7 @@ from flair.data import (
 )
 from flair.datasets.base import find_train_dev_test_files
 from flair.file_utils import cached_path, unpack_file
+from flair.tokenization import Tokenizer
 
 log = logging.getLogger("flair")
 
@@ -55,6 +56,7 @@ class MultiFileJsonlCorpus(Corpus):
         label_column_name: str = "label",
         metadata_column_name: str = "metadata",
         label_type: str = "ner",
+        use_tokenizer: Union[bool, Tokenizer] = True,
         **corpusargs,
     ) -> None:
         """Instantiates a MuliFileJsonlCorpus as, e.g., created with doccanos JSONL export.
@@ -66,9 +68,12 @@ class MultiFileJsonlCorpus(Corpus):
         :param train_files: the name of the train files
         :param test_files: the name of the test files
         :param dev_files: the name of the dev files, if empty, dev data is sampled from train
+        :param encoding: file encoding (default "utf-8")
         :param text_column_name: Name of the text column inside the jsonl files.
         :param label_column_name: Name of the label column inside the jsonl files.
         :param metadata_column_name: Name of the metadata column inside the jsonl files.
+        :param label_type: he type of label to predict (default "ner")
+        :param use_tokenizer: Specify a custom tokenizer to split the text into tokens.
 
         :raises RuntimeError: If no paths are given
         """
@@ -82,6 +87,7 @@ class MultiFileJsonlCorpus(Corpus):
                         metadata_column_name=metadata_column_name,
                         label_type=label_type,
                         encoding=encoding,
+                        use_tokenizer=use_tokenizer,
                     )
                     for train_file in train_files
                 ]
@@ -100,6 +106,8 @@ class MultiFileJsonlCorpus(Corpus):
                         label_column_name=label_column_name,
                         metadata_column_name=metadata_column_name,
                         label_type=label_type,
+                        encoding=encoding,
+                        use_tokenizer=use_tokenizer,
                     )
                     for test_file in test_files
                 ]
@@ -118,6 +126,8 @@ class MultiFileJsonlCorpus(Corpus):
                         label_column_name=label_column_name,
                         metadata_column_name=metadata_column_name,
                         label_type=label_type,
+                        encoding=encoding,
+                        use_tokenizer=use_tokenizer,
                     )
                     for dev_file in dev_files
                 ]
@@ -142,6 +152,7 @@ class JsonlCorpus(MultiFileJsonlCorpus):
         label_type: str = "ner",
         autofind_splits: bool = True,
         name: Optional[str] = None,
+        use_tokenizer: Union[bool, Tokenizer] = True,
         **corpusargs,
     ) -> None:
         """Instantiates a JsonlCorpus with one file per Dataset (train, dev, and test).
@@ -150,11 +161,14 @@ class JsonlCorpus(MultiFileJsonlCorpus):
         :param train_file: the name of the train file
         :param test_file: the name of the test file
         :param dev_file: the name of the dev file, if None, dev data is sampled from train
+        :param encoding: file encoding (default "utf-8")
         :param text_column_name: Name of the text column inside the JSONL file.
         :param label_column_name: Name of the label column inside the JSONL file.
         :param metadata_column_name: Name of the metadata column inside the JSONL file.
+        :param label_type: The type of label to predict (default "ner")
         :param autofind_splits: Whether train, test and dev file should be determined automatically
         :param name: name of the Corpus see flair.data.Corpus
+        :param use_tokenizer: Specify a custom tokenizer to split the text into tokens.
         """
         # find train, dev and test files if not specified
         dev_file, test_file, train_file = find_train_dev_test_files(
@@ -170,6 +184,7 @@ class JsonlCorpus(MultiFileJsonlCorpus):
             label_type=label_type,
             name=name if data_folder is None else str(data_folder),
             encoding=encoding,
+            use_tokenizer=use_tokenizer,
             **corpusargs,
         )
 
@@ -183,6 +198,7 @@ class JsonlDataset(FlairDataset):
         label_column_name: str = "label",
         metadata_column_name: str = "metadata",
         label_type: str = "ner",
+        use_tokenizer: Union[bool, Tokenizer] = True,
     ) -> None:
         """Instantiates a JsonlDataset and converts all annotated char spans to token tags using the IOB scheme.
 
@@ -198,9 +214,12 @@ class JsonlDataset(FlairDataset):
 
         Args:
             path_to_jsonl_file: File to read
+            encoding: file encoding (default "utf-8")
             text_column_name: Name of the text column
             label_column_name: Name of the label column
             metadata_column_name: Name of the metadata column
+            label_type: The type of label to predict (default "ner")
+            use_tokenizer: Specify a custom tokenizer to split the text into tokens.
         """
         path_to_json_file = Path(path_to_jsonl_file)
 
@@ -217,7 +236,7 @@ class JsonlDataset(FlairDataset):
                 raw_text = current_line[text_column_name]
                 current_labels = current_line[label_column_name]
                 current_metadatas = current_line.get(self.metadata_column_name, [])
-                current_sentence = Sentence(raw_text)
+                current_sentence = Sentence(raw_text, use_tokenizer=use_tokenizer)
 
                 self._add_labels_to_sentence(raw_text, current_sentence, current_labels)
                 self._add_metadatas_to_sentence(current_sentence, current_metadatas)
@@ -324,6 +343,7 @@ class MultiFileColumnCorpus(Corpus):
             dev_files: the name of the dev files, if empty, dev data is sampled from train
             column_delimiter: default is to split on any separatator, but you can overwrite for instance with "\t" to split only on tabs
             comment_symbol: if set, lines that begin with this symbol are treated as comments
+            encoding: file encoding (default "utf-8")
             document_separator_token: If provided, sentences that function as document boundaries are so marked
             skip_first_line: set to True if your dataset has a header line
             in_memory: If set to True, the dataset is kept in memory as Sentence objects, otherwise does disk reads
@@ -476,7 +496,7 @@ class ColumnDataset(FlairDataset):
         Args:
             path_to_column_file: path to the file with the column-formatted data
             column_name_map: a map specifying the column format
-            column_delimiter: default is to split on any separatator, but you can overwrite for instance with "\t" to split only on tabs
+            column_delimiter: default is to split on any separator, but you can overwrite for instance with "\t" to split only on tabs
             comment_symbol: if set, lines that begin with this symbol are treated as comments
             in_memory: If set to True, the dataset is kept in memory as Sentence objects, otherwise does disk reads
             document_separator_token: If provided, sentences that function as document boundaries are so marked
@@ -2994,14 +3014,12 @@ class NER_GERMAN_POLITICS(ColumnCorpus):
             with (data_folder / "train.txt").open("w", encoding="utf-8") as train, (data_folder / "test.txt").open(
                 "w", encoding="utf-8"
             ) as test, (data_folder / "dev.txt").open("w", encoding="utf-8") as dev:
-                k = 0
-                for line in file.readlines():
-                    k += 1
+                for k, line in enumerate(file.readlines(), start=1):
                     if k <= train_len:
                         train.write(line)
-                    elif k > train_len and k <= (train_len + test_len):
+                    elif train_len < k <= (train_len + test_len):
                         test.write(line)
-                    elif k > (train_len + test_len) and k <= num_lines:
+                    elif (train_len + test_len) < k <= num_lines:
                         dev.write(line)
 
 
@@ -5073,6 +5091,140 @@ class NER_GERMAN_MOBIE(ColumnCorpus):
         )
 
 
+class NER_ESTONIAN_NOISY(ColumnCorpus):
+    data_url = "https://storage.googleapis.com/google-code-archive-downloads/v2/code.google.com/patnlp/estner.cnll.zip"
+    label_url = "https://raw.githubusercontent.com/uds-lsv/NoisyNER/master/data/only_labels"
+
+    def __init__(
+        self,
+        version: int = 0,
+        base_path: Optional[Union[str, Path]] = None,
+        in_memory: bool = True,
+        **corpusargs,
+    ) -> None:
+        """Initialize the NoisyNER corpus.
+
+        Args:
+            version (int): Chooses the labelset for the data.
+                v0 (default): Clean labels
+                v1 to v7: Different kinds of noisy labelsets (details: https://ojs.aaai.org/index.php/AAAI/article/view/16938)
+            base_path (Optional[Union[str, Path]]): Path to the data.
+                Default is None, meaning the corpus gets automatically downloaded and saved.
+                You can override this by passing a path to a directory containing the unprocessed files but typically this
+                should not be necessary.
+            in_memory (bool): If True the dataset is kept in memory achieving speedups in training.
+            **corpusargs: The arguments propagated to :meth:'flair.datasets.ColumnCorpus.__init__'.
+        """
+        if version not in range(8):
+            raise Exception(
+                "Please choose a version (int) from 0 to 7. With v0 (default) you get the clean labelset for the data, while v1 to v7 provide different kinds of noisy labelsets. For details see https://ojs.aaai.org/index.php/AAAI/article/view/16938."
+            )
+
+        base_path = self._set_path(base_path)
+        features = self._load_features(base_path)
+
+        if version == 0:
+            preinstances = self._process_clean_labels(features)
+        else:
+            rdcd_features = self._rmv_clean_labels(features)
+            labels = self._load_noisy_labels(version, base_path)
+            preinstances = self._process_noisy_labels(rdcd_features, labels)
+
+        instances = self._delete_empty_labels(version, preinstances)
+
+        train, dev, test = self._split_data(instances)
+
+        self._write_instances(version, base_path, "train", train)
+        self._write_instances(version, base_path, "dev", dev)
+        self._write_instances(version, base_path, "test", test)
+
+        super().__init__(
+            data_folder=base_path,
+            train_file=f"estner_noisy_labelset{version}_train.tsv",
+            dev_file=f"estner_noisy_labelset{version}_dev.tsv",
+            test_file=f"estner_noisy_labelset{version}_test.tsv",
+            column_format={0: "text", 1: "ner"},
+            in_memory=in_memory,
+            column_delimiter="\t",
+            **corpusargs,
+        )
+
+    @classmethod
+    def _set_path(cls, base_path) -> Path:
+        base_path = flair.cache_root / "datasets" / "estner" if not base_path else Path(base_path)
+        return base_path
+
+    @classmethod
+    def _load_features(cls, base_path) -> List[List[str]]:
+        print(base_path)
+        unpack_file(cached_path(cls.data_url, base_path), base_path, "zip", False)
+        with open(f"{base_path}/estner.cnll", encoding="utf-8") as in_file:
+            prefeatures = in_file.readlines()
+        features = [feature.strip().split("\t") for feature in prefeatures]
+        return features
+
+    @classmethod
+    def _process_clean_labels(cls, features) -> List[List[str]]:
+        preinstances = [[instance[0], instance[len(instance) - 1]] for instance in features]
+        return preinstances
+
+    @classmethod
+    def _rmv_clean_labels(cls, features) -> List[str]:
+        rdcd_features = [feature[:-1] for feature in features]
+        return rdcd_features
+
+    @classmethod
+    def _load_noisy_labels(cls, version, base_path) -> List[str]:
+        file_name = f"NoisyNER_labelset{version}.labels"
+        cached_path(f"{cls.label_url}/{file_name}", base_path)
+        with open(f"{base_path}/{file_name}", encoding="utf-8") as in_file:
+            labels = in_file.read().splitlines()
+        return labels
+
+    @classmethod
+    def _process_noisy_labels(cls, rdcd_features, labels) -> List[List[str]]:
+        instances = []
+        label_idx = 0
+        for feature in rdcd_features:
+            if len(feature) == 0:
+                instances.append([""])
+            else:
+                assert label_idx < len(labels)
+                instance = [feature[0], labels[label_idx]]
+                instances.append(instance)
+                label_idx += 1
+        assert label_idx == len(labels), ""
+        return instances
+
+    @classmethod
+    def _delete_empty_labels(cls, version, preinstances) -> List[str]:
+        instances = []
+        if version == 0:
+            for instance in preinstances:
+                if instance[0] != "--":
+                    instances.append(instance)
+        else:
+            for instance in preinstances:
+                if instance != "--":
+                    instances.append(instance)
+        return instances
+
+    @classmethod
+    def _split_data(cls, instances) -> Tuple[List[str], List[str], List[str]]:
+        train = instances[:185708]
+        dev = instances[185708:208922]
+        test = instances[208922:]
+        return train, dev, test
+
+    @classmethod
+    def _write_instances(cls, version, base_path, split, data):
+        column_separator = "\t"  # CoNLL format
+        with open(f"{base_path}/estner_noisy_labelset{version}_{split}.tsv", "w", encoding="utf-8") as out_file:
+            for instance in data:
+                out_file.write(column_separator.join(instance))
+                out_file.write("\n")
+
+
 class MASAKHA_POS(MultiCorpus):
     def __init__(
         self,
@@ -5121,11 +5273,13 @@ class MASAKHA_POS(MultiCorpus):
             "ibo",
             "kin",
             "lug",
+            "luo",
             "mos",
             "pcm",
             "nya",
             "sna",
             "swa",
+            "tsn",
             "twi",
             "wol",
             "xho",
@@ -5170,5 +5324,5 @@ class MASAKHA_POS(MultiCorpus):
             corpora.append(corp)
         super().__init__(
             corpora,
-            name="africa-pos-" + "-".join(languages),
+            name="masakha-pos-" + "-".join(languages),
         )

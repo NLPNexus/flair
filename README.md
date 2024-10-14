@@ -14,7 +14,7 @@ Flair is:
 
 * **A powerful NLP library.** Flair allows you to apply our state-of-the-art natural language processing (NLP)
 models to your text, such as named entity recognition (NER), sentiment analysis, part-of-speech tagging (PoS),
-  special support for [biomedical data](/resources/docs/HUNFLAIR.md),
+  special support for [biomedical texts](/resources/docs/HUNFLAIR2.md),
  sense disambiguation and classification, with support for a rapidly growing number of languages.
 
 * **A text embedding library.** Flair has simple interfaces that allow you to use and combine different word and
@@ -23,7 +23,7 @@ document embeddings, including our proposed [Flair embeddings](https://www.aclwe
 * **A PyTorch NLP framework.** Our framework builds directly on [PyTorch](https://pytorch.org/), making it easy to
 train your own models and experiment with new approaches using Flair embeddings and classes.
 
-Now at [version 0.13.1(https://github.com/flairNLP/flair/releases)!
+Now at [version 0.14.0](https://github.com/flairNLP/flair/releases)!
 
 
 ## State-of-the-Art Models
@@ -127,6 +127,7 @@ In particular:
 - [Tutorial 1: Basic tagging](https://flairnlp.github.io/docs/category/tutorial-1-basic-tagging) → how to tag your text 
 - [Tutorial 2: Training models](https://flairnlp.github.io/docs/category/tutorial-2-training-models) → how to train your own state-of-the-art NLP models 
 - [Tutorial 3: Embeddings](https://flairnlp.github.io/docs/category/tutorial-3-embeddings) → how to produce embeddings for words and documents
+- [Tutorial 4: Biomedical text](https://flairnlp.github.io/docs/category/tutorial-4-biomedical-text) → how to analyse biomedical text data
 
 There is also a dedicated landing page for our [biomedical NER and datasets](/resources/docs/HUNFLAIR.md) with
 installation instructions and tutorials.
@@ -191,7 +192,7 @@ If you use our new "FLERT" models or approach, please cite [this paper](https://
 }
 ```
 
-If you use our TARS approach for few-shot and zero-shot learning, please cite [this paper](https://kishaloyhalder.github.io/pdfs/tars_coling2020.pdf/):
+If you use our TARS approach for few-shot and zero-shot learning, please cite [this paper](https://aclanthology.org/2020.coling-main.285/):
 
 ```
 @inproceedings{halder2020coling,

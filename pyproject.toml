@@ -28,6 +28,10 @@ filterwarnings = [
     "ignore:The class LayoutLMv3FeatureExtractor is deprecated and will be removed in version 5 of Transformers. Please use LayoutLMv3ImageProcessor instead.",  # huggingface layoutlmv3 has deprecated calls.
     "ignore:pkg_resources",  # huggingface has deprecated calls.
     'ignore:Deprecated call to `pkg_resources',  # huggingface has deprecated calls.
+    'ignore:distutils Version classes are deprecated.',  # faiss uses deprecated distutils.
+    'ignore:`resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.',  # transformers calls deprecated hf_hub
+    "ignore:`torch.cuda.amp.GradScaler",  # GradScaler changes in torch 2.3.0 but we want to be backwards compatible.
+    "ignore:`clean_up_tokenization_spaces` was not set",  # Default behavior changes in transformers v4.45, raising irrelevant FutureWarning for serialized models.
 ]
 markers = [
     "integration",
@@ -45,8 +49,9 @@ ignore_errors = true
 
 [tool.ruff]
 line-length = 120
-target-version = "py37"
+target-version = "py38"
 
+[tool.ruff.lint]
 #select = ["ALL"]    # Uncommit to autofix all the things
 select = [
   "C4",
@@ -95,12 +100,12 @@ unfixable = [
   "F841",   # Do not remove unused variables automatically
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "flair/embeddings/legacy.py" = ["D205"]
 "scripts/*" = ["INP001"]  #  no need for __ini__ for scripts
 "flair/datasets/*" = ["D417"]  # need to fix datasets in a unified way later.
 
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.pydocstyle]

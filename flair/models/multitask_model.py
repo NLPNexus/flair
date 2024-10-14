@@ -250,7 +250,6 @@ class MultitaskModel(flair.nn.Classifier):
         hu_path: str = "https://nlp.informatik.hu-berlin.de/resources/models"
 
         # biomedical models
-        model_map["bioner"] = "/".join([hu_path, "bioner", "hunflair.pt"])
         model_map["hunflair"] = "/".join([hu_path, "bioner", "hunflair.pt"])
         model_map["hunflair-paper"] = "/".join([hu_path, "bioner", "hunflair-paper.pt"])
 
@@ -260,6 +259,14 @@ class MultitaskModel(flair.nn.Classifier):
 
         cache_dir = Path("models")
         if model_name in model_map:
+            if model_name in ["hunflair", "hunflair-paper", "bioner"]:
+                log.warning(
+                    "HunFlair (version 1) is deprecated. Consider using HunFlair2 for improved extraction performance: "
+                    "Classifier.load('hunflair2')."
+                    "See https://github.com/flairNLP/flair/blob/master/resources/docs/HUNFLAIR2.md for further "
+                    "information."
+                )
+
             model_name = cached_path(model_map[model_name], cache_dir=cache_dir)
 
         return model_name
